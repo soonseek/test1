@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm prisma generate:*)",
+      "Bash(pnpm add:*)",
+      "Bash(npx tsc:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(pnpm prisma db push:*)",
+      "Bash(pnpm --filter @magic-wand/db prisma db push:*)",
+      "Bash(npx prisma db push:*)",
+      "Bash(DATABASE_URL=\"postgresql://postgres:postgres@localhost:5432/magic_wand?schema=public\" pnpm prisma:*)",
+      "Bash(pnpm dev)",
+      "Bash(cat:*)",
+      "Bash(node:*)",
+      "Bash(npx tsx:*)",
+      "Bash(curl:*)",
+      "Bash(pnpm build:*)",
+      "Bash(npm run dev)",
+      "Bash(for file in *.ts)",
+      "Bash(do sed:*)",
+      "Bash(done:*)",
+      "Bash(powershell:*)",
+      "Bash(grep:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd:*)",
+      "Bash(timeout:*)",
+      "WebSearch",
+      "Bash(pnpm --filter @magic-wand/agents build:*)"
+    ]
+  }
+}

@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+
+  --primary: 262 83% 58%;
+  --primary-foreground: 210 40% 98%;
+
+  --secondary: 45 93% 47%;
+  --secondary-foreground: 222.2 47.4% 11.2%;
+
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+
+  --radius: 0.5rem;
+}
+
+body {
+  @apply bg-background text-foreground;
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+/* Magic Wand Theme */
+.magic-gradient {
+  background: linear-gradient(135deg, #8B5CF6 0%, #F59E0B 100%);
+}
+
+.magic-glow {
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.5);
+}
+
+/* Markdown Styles for Agent Outputs */
+.custom-markdown {
+  line-height: 1.7;
+}
+
+.custom-markdown h1:first-child,
+.custom-markdown h2:first-child,
+.custom-markdown h3:first-child {
+  margin-top: 0;
+}
+
+.custom-markdown code {
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.custom-markdown pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.custom-markdown table {
+  border-collapse: collapse;
+}
+
+.custom-markdown th,
+.custom-markdown td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.custom-markdown tr:last-child td {
+  border-bottom: none;
+}
+
+.custom-markdown input[type="checkbox"] {
+  margin-right: 0.5rem;
+  accent-color: #8B5CF6;
+}
+
+.custom-markdown ul > li::marker {
+  color: #8B5CF6;
+}
+
+.custom-markdown ol > li::marker {
+  color: #8B5CF6;
+  font-weight: bold;
+}

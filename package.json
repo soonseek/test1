@@ -1,0 +1,41 @@
+{
+  "name": "magic-wand",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MVP 자동 생성 플랫폼",
+  "scripts": {
+    "dev": "pnpm --filter './apps/**' dev",
+    "build": "pnpm --filter './apps/**' build",
+    "lint": "pnpm --filter './apps/**' lint",
+    "test": "pnpm --filter './apps/**' --filter './packages/**' test",
+    "clean": "pnpm --filter './apps/**' --filter './packages/**' clean",
+    "db:generate": "pnpm --filter @magic-wand/db prisma generate",
+    "db:push": "pnpm --filter @magic-wand/db prisma db push",
+    "db:migrate": "pnpm --filter @magic-wand/db prisma migrate dev",
+    "db:studio": "pnpm --filter @magic-wand/db prisma studio",
+    "api:dev": "pnpm --filter @magic-wand/api dev",
+    "web:dev": "pnpm --filter @magic-wand/web dev",
+    "prepare": "husky install"
+  },
+  "keywords": [
+    "mvp",
+    "automation",
+    "ai",
+    "nextjs"
+  ],
+  "author": "MAGIC WAND",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "prettier": "^3.1.1",
+    "eslint": "^8.56.0",
+    "husky": "^8.0.3",
+    "lint-staged": "^15.2.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.14.0"
+}

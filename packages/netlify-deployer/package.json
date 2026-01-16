@@ -1,0 +1,21 @@
+{
+  "name": "@magic-wand/netlify-deployer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Netlify deployment automation",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@magic-wand/shared": "workspace:*",
+    "@magic-wand/db": "workspace:*",
+    "axios": "^1.6.5",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

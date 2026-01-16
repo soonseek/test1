@@ -1,0 +1,227 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========================================
+// Project
+// ========================================
+model Project {
+  id            String   @id @default(cuid())
+  name          String
+  description   String   @db.Text
+  wizardLevel   WizardLevel @default(APPRENTICE)
+
+  // Epic & Story
+  epicMarkdown  String?  @db.Text  // Epic.md 내용
+  storyFiles    Json?             // Story 파일들 배열
+
+  sessionFiles  SessionFile[]
+  surveyAnswer  SurveyAnswer?
+  deployment    Deployment?
+  issueReports  IssueReport[]
+  agentExecutions AgentExecution[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([createdAt])
+}
+
+// ========================================
+// SessionFile
+// ========================================
+model SessionFile {
+  id            String   @id @default(cuid())
+  projectId     String
+
+  s3Key         String   @unique
+  fileName      String
+  fileType      String
+  fileSize      Int
+
+  // 업스테이지 파싱 결과
+  parsedText       String?
+  parsedLayout     Json?
+  parsedTables     Json?
+  confidence       Float?
+
+  // 사용자 입력 설명
+  description      String   @db.Text
+
+  uploadedAt       DateTime @default(now())
+
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+// ========================================
+// SurveyAnswer
+// ========================================
+model SurveyAnswer {
+  id                String   @id @default(cuid())
+  projectId         String   @unique
+
+  // 디자인
+  designTemplate    String?  // 인턴 마법사일 때
+  colorTheme        String
+  designStyle       DesignStyle
+  referenceSiteUrl  String?
+
+  // 기능
+  authType          AuthType
+  requiredPages     String[]
+  databaseTables    String[]
+  externalApis      String[]
+
+  // 특별 요구사항
+  specialRequests   String?
+
+  // JSON으로 전체 응답 저장
+  answers           Json
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// ========================================
+// Deployment
+// ========================================
+model Deployment {
+  id              String   @id @default(cuid())
+  projectId       String   @unique
+
+  githubRepoUrl   String
+  githubBranch    String   @default("main")
+  netlifyUrl      String?
+  netlifySiteId   String?
+
+  status          DeploymentStatus @default(PENDING)
+  logs            Json?
+
+  estimatedTime   Int?     // 예상 시간 (분)
+  estimatedMuggleMandays  String?  // 머글 기준
+
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+// ========================================
+// IssueReport
+// ========================================
+model IssueReport {
+  id              String   @id @default(cuid())
+  projectId       String
+
+  slackMessageId  String?
+  slackChannel    String
+  slackTs         String
+
+  issue           String   @db.Text
+  status          IssueStatus @default(OPEN)
+
+  fixAttempts     Int      @default(0)
+  fixLogs         Json?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([status])
+}
+
+// ========================================
+// AgentExecution
+// ========================================
+model AgentExecution {
+  id              String   @id @default(cuid())
+  projectId       String
+
+  agentId         String
+  agentName       String
+  status          AgentStatus @default(RUNNING)
+
+  startedAt       DateTime @default(now())
+  completedAt     DateTime?
+  retryCount      Int      @default(0)
+
+  input           Json
+  output          Json?
+  error           Json?
+
+  attachments     Json?    // Attachment[]
+  comments        Json?    // Comment[]
+  activityLogUrl  String?  // S3 URL
+
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([agentId])
+  @@index([status])
+}
+
+// ========================================
+// Enums
+// ========================================
+enum WizardLevel {
+  APPRENTICE    // 인턴 마법사
+  SKILLED       // 숙련자 마법사
+  ARCHMAGE      // 대마법사
+}
+
+enum DesignStyle {
+  MINIMAL
+  MODERN
+  PLAYFUL
+  COLORFUL
+  CUSTOM
+}
+
+enum AuthType {
+  NONE
+  EMAIL
+  SOCIAL
+}
+
+enum DeploymentStatus {
+  PENDING
+  IN_PROGRESS
+  DEPLOYED
+  FAILED
+}
+
+enum IssueStatus {
+  OPEN
+  IN_PROGRESS
+  FIXED
+  CANNOT_FIX
+}
+
+enum AgentStatus {
+  IDLE
+  RUNNING
+  WAITING
+  COMPLETED
+  FAILED
+  RETRYING
+  CANCELLED
+}

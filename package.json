@@ -13,7 +13,7 @@
     "db:push": "pnpm --filter @magic-wand/db prisma db push",
     "db:migrate": "pnpm --filter @magic-wand/db prisma migrate dev",
     "db:studio": "pnpm --filter @magic-wand/db prisma studio",
-    "api:dev": "pnpm --filter @magic-wand/api dev",
+    "api:dev": "tsx watch apps/api/src/index.ts",
     "web:dev": "pnpm --filter @magic-wand/web dev",
     "prepare": "husky install"
   },
@@ -26,12 +26,14 @@
   "author": "MAGIC WAND",
   "license": "MIT",
   "devDependencies": {
+    "@netlify/neon": "^0.1.0",
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3",
-    "prettier": "^3.1.1",
     "eslint": "^8.56.0",
     "husky": "^8.0.3",
-    "lint-staged": "^15.2.0"
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.1.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
   },
   "engines": {
     "node": ">=20.0.0",

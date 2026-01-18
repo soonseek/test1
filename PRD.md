@@ -1,22 +1,44 @@
 # MAGIC WAND - Product Requirements Document
 
-**버전:** 1.0
-**작성일:** 2025-01-15
-**작성자:** Claude Sonnet
-**상태:** 초안
+**버전:** 2.0
+**작성일:** 2026-01-18
+**작성자:** MAGIC WAND Team
+**상태:** 실사용 반영 (Superpowers 워크플로우 통합)
+**변경이유:** Superpowers 워크플로우 도입에 따른 Agent 시스템 재설계
+
+---
+
+## 변경사항 요약 (v1.0 → v2.0)
+
+### 주요 변경
+- ✅ Agent 수: 8개 → **13개** (+5개 추가)
+- ✅ 워크플로우: 단순 파이프라인 → **다중 계층 구조**
+- ✅ Epic/Story 시스템 도입 (Superpowers 통합)
+- ✅ Task 관리 시스템 도입
+- ✅ 데이터 모델 업데이트 (epicMarkdown, storyFiles)
 
 ---
 
 ## 1. 제품 개요
 
 ### 1.1 제품명
-**MAGIC WAND** - 프리랜서 웹 개발자를 위한 MVP 자동 생성 플랫폼
+**MAGIC WAND** - AI 기반 MVP 자동 생성 플랫폼
 
 ### 1.2 제품 목표
-프리랜서 웹 개발자가 고객의 요청사항을 입력하면, AI Agent 시스템이 자동으로 MVP(Minimum Viable Product)를 구축하고 Netlify에 배포까지 완료하는 자동화 시스템을 구축한다.
+프리랜서 웹 개발자가 고객의 요청사항을 입력하면, **Superpowers 워크플로우** 기반의 AI Agent 시스템이 자동으로:
+1. **PRD (제품 요구사항 문서) 생성**
+2. **Epic & Story 분해** (BMad Method)
+3. **Task 관리 및 개발**
+4. **GitHub 레포지토리 생성**
+5. **Netlify 자동 배포**
+
+까지 완료하는 자동화 시스템을 구축한다.
 
 ### 1.3 핵심 가치 제안
 > "마법 지팡이를 휘두르듯, 당신의 아이디어를 작동하는 웹 서비스로"
+
+### 1.4 Superpowers 워크플로우 통합
+**MAGIC WAND는 Superpowers 프레임워크의 Epic/Story 기반 개발 방식론을 채택합니다.**
 
 ---
 
@@ -24,1099 +46,753 @@
 
 ### 2.1 Agent 개요
 
-MAGIC WAND는 **다중 AI Agent 시스템**으로 구동되며, 각 Agent는 특정 책임을 가지고 순차적으로 또는 병렬적으로 실행된다.
+MAGIC WAND는 **13개의 다중 AI Agent 시스템**으로 구동되며, 각 Agent는 특정 책임을 가지고 순차적으로 실행됩니다.
 
-### 2.2 Agent 정의 표준
+### 2.2 Agent 전체 목록 (13개)
 
-모든 Agent는 다음 속성을 가진다:
+#### Phase 1: 분석 및 설계 (4개)
+1. **RequirementAnalyzerAgent** - 요구사항 분석 및 PRD 생성
+2. **EpicStoryAgent** - Epic & Story 생성 (⭐ NEW)
+3. **ScrumMasterAgent** - Task 관리 (⭐ NEW)
+4. **DocumentParserAgent** - 문서 파싱
 
-| 속성 | 타입 | 설명 |
-|------|------|------|
-| `agent_id` | String | 고유 식별자 (예: `requirement-analyzer`) |
-| `name` | String | Agent 이름 |
-| `role` | String | Agent의 역할 설명 |
-| `trigger` | String/Condition | 실행 조건 |
-| `completion_mode` | Enum | `auto_close` 또는 `requires_review` |
-| `input_schema` | Object | 입력 데이터 구조 |
-| `output_schema` | Object | 출력 데이터 구조 |
-| `max_retries` | Integer | 최대 재시도 횟수 |
-| `timeout` | Integer | 타임아웃 (초) |
-| `dependencies` | Array[String] | 선행 Agent ID 목록 |
-| `context_sharing` | Object | 다른 Agent와 공유할 컨텍스트 |
+#### Phase 2: 개발 (4개)
+5. **DeveloperAgent** - 코드 개발 (⭐ NEW)
+6. **CodeReviewerAgent** - 코드 리뷰 (⭐ NEW)
+7. **TesterAgent** - 테스트 (⭐ NEW)
+8. **PromptBuilderAgent** - 프롬프트 빌딩
 
-### 2.3 Agent 워크플로우 정의
+#### Phase 3: 빌드 및 배포 (3개)
+9. **CodeGeneratorAgent** - 코드 생성
+10. **GitHubPusherAgent** - GitHub 푸시
+11. **NetlifyDeployerAgent** - Netlify 배포
+
+#### Phase 4: 테스트 및 유지보수 (2개)
+12. **E2ETestRunnerAgent** - E2E 테스트
+13. **IssueResolverAgent** - 이슈 해결
+
+### 2.3 Agent 워크플로우 다이어그램
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    MAGIC WAND Workflow                      │
+│              MAGIC WAND Workflow (v2.0)                     │
 └─────────────────────────────────────────────────────────────┘
                             │
-        ┌───────────────────┴───────────────────┐
-        │                                       │
-   [Trigger]                                [Trigger]
-   설문 제출 완료                           파일 업로드
-        │                                       │
-        ▼                                       ▼
-┌───────────────┐                   ┌───────────────┐
-│ Agent 1       │                   │ Agent 2       │
-│ Requirement   │                   │ Document      │
-│ Analyzer      │                   │ Parser        │
-└───────────────┘                   └───────────────┘
-        │                                       │
-        │ auto_close                            │ auto_close
-        │                                       │
-        └───────────────┬───────────────────────┘
-                        ▼
-                 ┌───────────────┐
-                 │ Agent 3       │
-                 │ Prompt        │
-                 │ Builder       │
-                 └───────────────┘
-                        │
-                        │ auto_close
-                        ▼
-                 ┌───────────────┐
-                 │ Agent 4       │
-                 │ Code          │
-                 │ Generator     │
-                 └───────────────┘
-                        │
-                        │ requires_review
-                        │ (첫 번째 생성만)
-                        ▼
-                 ┌───────────────┐
-                 │ Agent 5       │
-                 │ GitHub        │
-                 │ Pusher        │
-                 └───────────────┘
-                        │
-                        │ auto_close
-                        ▼
-                 ┌───────────────┐
-                 │ Agent 6       │
-                 │ Netlify       │
-                 │ Deployer      │
-                 └───────────────┘
-                        │
-                        │ auto_close
-                        ▼
-                 ┌───────────────┐
-                 │ Agent 7       │
-                 │ E2E Test      │
-                 │ Runner        │
-                 └───────────────┘
-                        │
-                        │ requires_review
-                        │ (3회 실패 시)
-                        ▼
-                 ┌───────────────┐
-                 │ Agent 8       │
-                 │ Issue         │
-                 │ Resolver      │
-                 └───────────────┘
-                        │
-                        │ auto_close
-                        ▼
-                 [Complete]
-```
-
-### 2.4 Agent 상세 명세
-
-#### Agent 1: Requirement Analyzer
-
-```yaml
-agent_id: "requirement-analyzer"
-name: "요구사항 분석기"
-role: "설문 응답을 분석하여 구조화된 요구사항을 생성"
-
-trigger:
-  type: "event"
-  event: "survey.submitted"
-
-completion_mode: "auto_close"
-max_retries: 3
-timeout: 300  # 5분
-
-dependencies: []
-context_sharing:
-  shares_to: ["prompt-builder", "code-generator"]
-  data: ["structured_requirements", "complexity_score"]
-
-input_schema:
-  survey_answers:
-    type: "object"
-    description: "설문조사 응답 전체"
-  wizard_level:
-    type: "enum"
-    values: ["APPRENTICE", "SKILLED", "ARCHMAGE"]
-  uploaded_files:
-    type: "array"
-    items:
-      s3_key: "string"
-      description: "string"
-
-output_schema:
-  structured_requirements:
-    type: "object"
-    properties:
-      project_overview: "object"
-      design_spec: "object"
-      functional_requirements: "array"
-      technical_requirements: "object"
-  complexity_score:
-    type: "integer"
-    range: [1, 100]
-  estimated_time:
-    type: "object"
-    properties:
-      minutes: "integer"
-      muggle_equivalent: "string"
-
-execution_logic: |
-  1. 설문 응답 파싱 및 유효성 검증
-  2. 마법사 레벨에 따른 분석 깊이 결정
-     - APPRENTICE: 템플릿 기반 분석
-     - SKILLED: 50% 커스터마이징 분석
-     - ARCHMAGE: 완전 커스텀 분석
-  3. 복잡도 점수 산출 (1~100)
-  4. 예상 시간 계산 (Claude 추론)
-  5. 머글 기준 맨먼스 환산
-
-failure_handling:
-  on_error: "retry_with_fallback_template"
-  max_retries_exceeded: "use_template_based_requirements"
+                    [Trigger: 설문 제출 완료]
+                            │
+                            ▼
+┌───────────────────────────────────────────────────────────┐
+│  Phase 1: 분석 및 설계                                     │
+│                                                           │
+│  ┌──────────────────┐                                     │
+│  │ Requirement      │                                     │
+│  │ AnalyzerAgent    │ PRD 생성 (3개 옵션)                │
+│  └──────────────────┘                                     │
+│           │                                               │
+│           │ [User가 PRD 선택]                             │
+│           ▼                                               │
+│  ┌──────────────────┐                                     │
+│  │ EpicStoryAgent    │ Epic & Story 생성                  │
+│  └──────────────────┘                                     │
+│           │                                               │
+│           ▼                                               │
+│  ┌──────────────────┐                                     │
+│  │ ScrumMasterAgent  │ Task 관리                          │
+│  └──────────────────┘                                     │
+└───────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌───────────────────────────────────────────────────────────┐
+│  Phase 2: 개발 (각 Task 순차적 실행)                        │
+│                                                           │
+│  ┌──────────────────┐     ┌──────────────────┐           │
+│  │ DeveloperAgent    │ ───▶│ CodeReviewerAgent │           │
+│  │ (Task별 코드 개발) │     │ (코드 리뷰)      │           │
+│  └──────────────────┘     └──────────────────┘           │
+│           │                        │                        │
+│           ▼                        ▼                        │
+│  ┌──────────────────┐                                      │
+│  │ TesterAgent       │ (테스트)                            │
+│  └──────────────────┘                                      │
+│           │                                               │
+│           │ [모든 Task 완료 시]                            │
+│           ▼                                               │
+│  ┌──────────────────┐                                     │
+│  │ PromptBuilder     │ 프롬프트 빌딩                      │
+│  └──────────────────┘                                     │
+└───────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌───────────────────────────────────────────────────────────┐
+│  Phase 3: 빌드 및 배포                                     │
+│                                                           │
+│  ┌──────────────────┐                                     │
+│  │ CodeGenerator     │ 최종 코드 생성                      │
+│  └──────────────────┘                                     │
+│           │                                               │
+│           ▼                                               │
+│  ┌──────────────────┐                                     │
+│  │ GitHubPusher      │ GitHub 레포지토리 생성 및 푸시     │
+│  └──────────────────┘                                     │
+│           │                                               │
+│           ▼                                               │
+│  ┌──────────────────┐                                     │
+│  │ NetlifyDeployer   │ Netlify 배포                       │
+│  └──────────────────┘                                     │
+└───────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌───────────────────────────────────────────────────────────┐
+│  Phase 4: 테스트 및 유지보수                               │
+│                                                           │
+│  ┌──────────────────┐                                     │
+│  │ E2ETestRunner     │ E2E 테스트                          │
+│  └──────────────────┘                                     │
+│           │                                               │
+│           │ [테스트 실패 시]                               │
+│           ▼                                               │
+│  ┌──────────────────┐                                     │
+│  │ IssueResolver     │ 이슈 분석 및 수정                  │
+│  └──────────────────┘                                     │
+└───────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                       [Complete]
 ```
 
 ---
 
-#### Agent 2: Document Parser
+## 3. Agent 상세 명세
 
+### 3.1 Phase 1: 분석 및 설계
+
+#### Agent 1: RequirementAnalyzerAgent
+
+**역할:** 요구사항 심층 분석 및 PRD 생성
+
+**트리거:**
 ```yaml
-agent_id: "document-parser"
-name: "문서 파서"
-role: "업로드된 파일을 업스테이지 API로 파싱하여 구조화된 데이터 추출"
-
-trigger:
-  type: "event"
-  event: "file.uploaded"
-  parallel: true  # 파일별로 병렬 실행
-
-completion_mode: "auto_close"
-max_retries: 3
-timeout: 600  # 10분 (파일 크기에 따라 다름)
-
-dependencies: []
-context_sharing:
-  shares_to: ["prompt-builder", "code-generator"]
-  data: ["parsed_documents", "extracted_insights"]
-
-input_schema:
-  file_metadata:
-    s3_key: "string"
-    file_name: "string"
-    file_type: "string"
-    file_size: "integer"
-    user_description: "string"  # 사용자가 입력한 설명
-
-output_schema:
-  parsed_document:
-    type: "object"
-    properties:
-      file_id: "string"
-      raw_text: "string"  # OCR 결과
-      layout_info: "object"  # 레이아웃 분석
-      tables: "array"  # 추출된 표
-      images: "array"  # 이미지 메타데이터
-      confidence: "float"
-  extracted_insights:
-    type: "object"
-    properties:
-      document_type: "enum"  # ["design-reference", "spec-document", "wireframe", "other"]
-      key_requirements: "array"
-      visual_style: "object"  # 색상, 폰트 등
-      suggested_features: "array"
-
-execution_logic: |
-  1. S3에서 파일 다운로드
-  2. 파일 타입 감지
-     - 이미지: OCR + 레이아웃 분석
-     - PDF: 도큐멘트 파싱
-     - 기타: 기본 처리
-  3. 업스테이지 API 호출
-     - OCR: 텍스트 추출
-     - Layout Analysis: 구조 파악
-     - Table Extraction: 표 데이터 추출
-  4. Claude로 문서 유형 추론
-  5. 사용자 설명과 결합하여 인사이트 추출
-
-external_apis:
-  - name: "Upstage Document AI"
-    endpoint: "https://api.upstage.ai/v1/document-ai/parse"
-    auth_method: "Bearer Token"
-    timeout: 300
-
-failure_handling:
-  on_error: "mark_as_failed_and_continue"
-  user_notification: "파일 파싱 실패: {file_name}. 기본 텍스트만 사용합니다."
+event: "survey.submitted"
 ```
 
----
-
-#### Agent 3: Prompt Builder
-
-```yaml
-agent_id: "prompt-builder"
-name: "프롬프트 빌더"
-role: "요구사항과 파싱된 문서를 Claude Code 프롬프트로 변환"
-
-trigger:
-  type: "dependency_satisfied"
-  dependencies: ["requirement-analyzer", "document-parser"]
-
-completion_mode: "auto_close"
-max_retries: 2
-timeout: 180  # 3분
-
-dependencies:
-  - "requirement-analyzer"
-  - "document-parser"
-
-context_sharing:
-  shares_to: ["code-generator"]
-  data: ["claude_code_prompt", "generation_plan"]
-
-input_schema:
-  structured_requirements: "object"
-  parsed_documents: "array"
-  complexity_score: "integer"
-  wizard_level: "enum"
-
-output_schema:
-  claude_code_prompt:
-    type: "string"
-    description: "Claude Code CLI에 전달할 전체 프롬프트"
-  generation_plan:
-    type: "object"
-    properties:
-      phases: "array"
-      estimated_steps: "integer"
-      risk_factors: "array"
-  attachments:
-    type: "array"
-    description: "파일 참조 URL 목록"
-    items:
-      type: "string"
-      url: "string"
-      description: "string"
-
-execution_logic: |
-  1. 요구사항 분석 결과 수집
-  2. 문서 파싱 결과 통합
-  3. 마법사 레벨에 따른 프롬프트 전략 결정
-     - APPRENTICE: 템플릿 + 기본 지침
-     - SKILLED: 커스터마이징 지침 추가
-     - ARCHMAGE: 완전 자유형 프롬프트
-  4. Claude Code 프롬프트 구성
-     - 프로젝트 개요
-     - 기술 스택 제약 (Next.js + shadcn + Prisma + Postgres)
-     - 디자인 가이드
-     - 레퍼런스 파일 인사이트
-     - 기능 요구사항
-     - 배포 정보
-  5. 첨부파일 URL 정리
-
-prompt_template: |
-  You are an expert full-stack developer specializing in Next.js and modern web development.
-
-  # Project Overview
-  {project_overview}
-
-  # Tech Stack (Fixed)
-  - Next.js 14+ (App Router)
-  - shadcn/ui
-  - Prisma ORM
-  - Postgres (Netlify DB)
-  - Netlify deployment
-
-  # Design Guidelines
-  {design_spec}
-
-  # Reference Materials
-  {reference_materials}
-
-  # Functional Requirements
-  {functional_requirements}
-
-  # Deployment Target
-  - GitHub: {github_repo_url}
-  - Netlify subdomain: {subdomain}
-
-  # Instructions
-  1. Create a complete Next.js project
-  2. Install and configure shadcn/ui
-  3. Set up Prisma with the required schema
-  4. Build all pages and components
-  5. Ensure responsive design (mobile-first)
-  6. Prepare for Netlify deployment
-
-  Please proceed step by step and explain your progress.
-```
-
----
-
-#### Agent 4: Code Generator
-
-```yaml
-agent_id: "code-generator"
-name: "코드 생성기"
-role: "Claude Code CLI를 실행하여 MVP 코드 생성"
-
-trigger:
-  type: "dependency_satisfied"
-  dependencies: ["prompt-builder"]
-
-completion_mode: "requires_review"
-max_retries: 5  # 코드 생성은 여러 번 재시도
-timeout: 7200  # 2시간 (최대)
-
-dependencies:
-  - "prompt-builder"
-
-context_sharing:
-  shares_to: ["github-pusher", "e2e-test-runner", "issue-resolver"]
-  data: ["generated_code_structure", "generation_logs", "code_quality_metrics"]
-
-input_schema:
-  claude_code_prompt: "string"
-  generation_plan: "object"
-  attachments: "array"
-  github_repo_url: "string"
-
-output_schema:
-  generation_result:
-    type: "object"
-    properties:
-      status: "enum"  # ["success", "partial", "failed"]
-      files_created: "array"
-      code_structure: "object"
-      generation_logs: "array"
-      warnings: "array"
-  code_quality_metrics:
-    type: "object"
-    properties:
-      total_lines: "integer"
-      test_coverage: "float"
-      eslint_errors: "integer"
-      type_errors: "integer"
-
-execution_logic: |
-  1. 작업 디렉토리 생성
-  2. Claude Code CLI 실행
-     - 명령어: npx claude-code --dangerously-skip-permissions
-     - 입력: 프롬프트 + 첨부파일
-  3. 실시간 로그 스트리밍
-  4. 생성된 파일 검증
-  5. 코드 품질 메트릭 수집
-
-review_criteria:
-  - checks: [
-      "typescript_compile_success",
-      "eslint_no_errors",
-      "all_dependencies_installed",
-      "nextjs_config_valid"
-    ]
-  - on_review_fail: "retry_with_feedback"
-  - max_review_failures: 3
-
-activity_log:
-  enabled: true
-  format: "markdown"
-  includes:
-    - "step_by_step_progress"
-    - "files_created_with_purpose"
-    - "decisions_made"
-    - "errors_encountered"
-
-comments:
-  allow_interactive: false  # 비대화형 모드
-  capture_all: true
-
-failure_handling:
-  on_partial_generation: "save_progress_and_retry"
-  on_complete_failure: "notify_user_and_request_intervention"
-```
-
----
-
-#### Agent 5: GitHub Pusher
-
-```yaml
-agent_id: "github-pusher"
-name: "GitHub 푸셔"
-role: "생성된 코드를 GitHub 레포지토리에 푸시"
-
-trigger:
-  type: "dependency_satisfied"
-  dependencies: ["code-generator"]
-  condition: "code_generator.status == 'success' OR code_generator.status == 'partial'"
-
-completion_mode: "auto_close"
-max_retries: 3
-timeout: 300  # 5분
-
-dependencies:
-  - "code-generator"
-
-context_sharing:
-  shares_to: ["netlify-deployer", "issue-resolver"]
-  data: ["github_commit_sha", "github_branch"]
-
-input_schema:
-  code_directory: "string"
-  github_repo_url: "string"
-  github_pat: "string"
-  commit_message:
-    type: "string"
-    default: "feat: initial MVP generated by MAGIC WAND 🪄"
-
-output_schema:
-  push_result:
-    type: "object"
-    properties:
-      commit_sha: "string"
-      branch: "string"
-      repository_url: "string"
-      files_pushed: "integer"
-
-execution_logic: |
-  1. GitHub PAT로 레포지토리 인증
-  2. 브랜치 생성 (기본: main)
-  3. 파일 초기화 및 커밋
-  4. 원격 레포지토리에 푸시
-  5. 결과 검증
-
-git_config:
-  user_name: "MAGIC WAND"
-  user_email: "magic-wand@automation.local"
-
-failure_handling:
-  on_auth_error: "notify_invalid_pat"
-  on_push_conflict: "create_new_branch"
-  on_network_error: "retry_with_backoff"
-```
-
----
-
-#### Agent 6: Netlify Deployer
-
-```yaml
-agent_id: "netlify-deployer"
-name: "Netlify 배포자"
-role: "GitHub 레포지토리를 Netlify에 연동하고 배포"
-
-trigger:
-  type: "dependency_satisfied"
-  dependencies: ["github-pusher"]
-
-completion_mode: "auto_close"
-max_retries: 3
-timeout: 600  # 10분 (빌드 시간 고려)
-
-dependencies:
-  - "github-pusher"
-
-context_sharing:
-  shares_to: ["e2e-test-runner", "issue-resolver"]
-  data: ["netlify_site_url", "netlify_site_id", "deployment_logs"]
-
-input_schema:
-  github_repo_url: "string"
-  github_branch: "string"
-  subdomain: "string"  # {project}-{random5}
-  netlify_auth_token: "string"
-
-output_schema:
-  deployment_result:
-    type: "object"
-    properties:
-      site_id: "string"
-      site_url: "string"
-      deploy_url: "string"
-      deploy_id: "string"
-      ssl_url: "string"
-      build_status: "enum"
-
-execution_logic: |
-  1. Netlify API로 사이트 생성
-     - 이름: {project_name}-{random5}
-     - 빌드 설정: Next.js 기본값
-  2. GitHub 레포지토리 연동
-     - 웹훅 자동 설정
-  3. 첫 배포 트리거
-  4. 배포 상태 모니터링
-  5. 배포 완료 시 URL 반환
-
-netlify_config:
-  build_command: "npm run build"
-  publish_directory: ".next"
-  node_version: "20"
-  environment_variables:
-    - key: "NETLIFY"
-      value: "true"
-
-monitoring:
-  poll_interval: 30  # 30초마다 배포 상태 확인
-  max_wait_time: 600  # 최대 10분 대기
-
-failure_handling:
-  on_build_failure: "capture_build_logs_and_notify"
-  on_deploy_timeout: "mark_as_failed_and_manual_intervention"
-```
-
----
-
-#### Agent 7: E2E Test Runner
-
-```yaml
-agent_id: "e2e-test-runner"
-name: "E2E 테스트 실행기"
-role: "생성된 MVP에 대해 E2E 테스트 자동 생성 및 실행"
-
-trigger:
-  type: "dependency_satisfied"
-  dependencies: ["netlify-deployer"]
-  condition: "netlify_deployer.build_status == 'ready'"
-
-completion_mode: "requires_review"
-max_retries: 3
-timeout: 900  # 15분
-
-dependencies:
-  - "netlify-deployer"
-
-context_sharing:
-  shares_to: ["issue-resolver"]
-  data: ["test_results", "failed_tests", "coverage_report"]
-
-input_schema:
-  deployed_url: "string"
-  test_requirements: "object"
-  complexity_score: "integer"
-
-output_schema:
-  test_results:
-    type: "object"
-    properties:
-      total_tests: "integer"
-      passed: "integer"
-      failed: "integer"
-      skipped: "integer"
-      duration: "integer"
-  failed_tests:
-    type: "array"
-    items:
-      test_name: "string"
-      error_message: "string"
-      stack_trace: "string"
-      screenshot_url: "string"
-  coverage_report:
-    type: "object"
-    properties:
-      lines: "float"
-      functions: "float"
-      branches: "float"
-      statements: "float"
-
-execution_logic: |
-  1. 배포된 사이트 분석
-  2. 테스트 시나리오 자동 생성 (Playwright)
-     - 기본 테스트: 홈 페이지 로드
-     - 네비게이션 테스트
-     - 반응형 테스트
-     - 기능별 테스트 (요구사항 기반)
-  3. 테스트 실행
-  4. 실패 시 스크린샷 캡처
-  5. 결과 보고서 생성
-
-test_framework:
-  e2e: "Playwright"
-  unit: "Vitest"
-  component: "@testing-library/react"
-
-test_generation_strategy:
-  complexity_based:
-    low:
-      - smoke_tests
-      - navigation_tests
-    medium:
-      - all_low_tests
-      - form_validation_tests
-      - api_integration_tests
-    high:
-      - all_medium_tests
-      - edge_case_tests
-      - performance_tests
-
-review_criteria:
-  - checks: [
-      "all_critical_tests_pass",
-      "test_coverage >= 60",
-      "no_critical_bugs"
-    ]
-  - on_review_fail: "trigger_issue_resolver"
-  - max_iterations: 3
-
-failure_handling:
-  on_test_failure:
-    action: "capture_evidence_and_retry"
-    evidence_to_capture:
-      - "screenshots"
-      - "network_logs"
-      - "console_errors"
-      - "page_source"
-  on_max_retries_exceeded:
-    action: "escalate_to_human"
-    notification: "3회 시도 후에도 테스트 실패. 개입 필요."
-
-attachments:
-  screenshots:
-    enabled: true
-    storage: "s3"
-    format: "png"
-  videos:
-    enabled: true
-    on_failure_only: true
-  logs:
-    enabled: true
-    format: "json"
-```
-
----
-
-#### Agent 8: Issue Resolver
-
-```yaml
-agent_id: "issue-resolver"
-name: "이슈 해결사"
-role: "사용자가 리포트한 이슈를 자동으로 분석하고 수정"
-
-trigger:
-  type: "event"
-  event: "issue.reported"
-  source: "slack"
-
-completion_mode: "auto_close"
-max_retries: 5
-timeout: 1800  # 30분
-
-dependencies:
-  optional: ["e2e-test-runner"]  # 테스트 결과가 있으면 참조
-
-context_sharing:
-  shares_to: ["github-pusher", "netlify-deployer", "e2e-test-runner"]
-  data: ["issue_analysis", "fix_commits", "resolution_logs"]
-
-input_schema:
-  issue_report:
-    type: "object"
-    properties:
-      slack_channel: "string"
-      slack_ts: "string"
-      user_message: "string"
-      reported_at: "datetime"
-  context:
-    type: "object"
-    properties:
-      project_id: "string"
-      deployment_url: "string"
-      github_branch: "string"
-      previous_test_results: "object"
-
-output_schema:
-  resolution_result:
-    type: "object"
-    properties:
-      issue_type: "enum"  # ["bug", "feature", "improvement", "cannot_fix"]
-      root_cause: "string"
-      fix_applied: "boolean"
-      fix_description: "string"
-      new_commit_sha: "string"
-      redeployed: "boolean"
-      test_results: "object"
-
-execution_logic: |
-  1. Slack 메시지 파싱
-  2. 이슈 분류 (Claude 추론)
-     - 버그
-     - 기능 요청
-     - 개선사항
-     - 해결 불가 (사람 개입 필요)
-  3. 이슈 재현 시도
-     - E2E 테스트로 재현
-     - 스크린샷/로그 캡처
-  4. 근본 원인 분석
-  5. 수정 코드 생성
-  6. 수정 사항 적용
-  7. 재배포
-  8. 재테스트
-  9. Slack으로 결과 알림
-
-issue_classification:
-  auto_fixable:
-    - "css_styling_issues"
-    - "navigation_bugs"
-    - "form_validation_errors"
-    - "api_integration_bugs"
-    - "responsive_design_issues"
-  requires_human:
-    - "ambiguous_requirements"
-    - "complex_business_logic"
-    - "security_concerns"
-    - "performance_optimization"
-
-retry_strategy:
-  max_attempts: 5
-  backoff: "exponential"
-  on_each_retry:
-    - "analyze_why_fix_failed"
-    - "adjust_fix_strategy"
-    - "apply_new_fix"
-
-activity_log:
-  enabled: true
-  includes:
-    - "issue_analysis"
-    - "fix_attempts"
-    - "code_changes"
-    - "test_results"
-
-slack_notifications:
-  on_issue_received: "🔍 이슈를 분석 중입니다..."
-  on_fix_applied: "✅ 수정 완료! 재배포 중..."
-  on_fix_failed: "❌ 수정 실패. 개입이 필요합니다."
-  on_redeploy_complete: "🚀 재배포 완료! 확인해주세요: {url}"
-
-comments:
-  type: "thread"
-  destination: "slack"
-  format: "markdown"
-  includes:
-    - "fix_summary"
-    - "code_diff"
-    - "test_results"
-
-failure_handling:
-  on_ambiguous_issue:
-    action: "ask_clarifying_questions"
-    questions: [
-      "어떤 페이지에서 문제가 발생했나요?",
-      "어떤 동작을 기대하셨나요?",
-      "스크린샷을 첨부해주실 수 있나요?"
-    ]
-  on_max_retries_exceeded:
-    action: "escalate_to_human"
-    notification: "자동 수정이 어렵습니다. 개발자의 도움이 필요합니다."
-```
-
----
-
-### 2.5 Agent 간 커뮤니케이션
-
-#### Context Sharing Protocol
-
+**입력:**
 ```typescript
-interface AgentContext {
-  agent_id: string;
-  timestamp: ISO8601;
-  data: Record<string, any>;
-  metadata: {
-    version: string;
-    ttl?: number;  // Time to live in seconds
-  };
-}
-
-interface ContextShareRequest {
-  from_agent: string;
-  to_agents: string[];
-  context_key: string;
-  data: any;
-  strategy: "broadcast" | "direct" | "publish_subscribe";
+{
+  projectId: string
+  project: {
+    name: string
+    description: string
+    wizardLevel: "APPRENTICE" | "SKILLED" | "ARCHMAGE"
+  }
+  files: UploadedFile[]
+  survey?: SurveyAnswer
 }
 ```
 
-#### Event Bus
-
-```yaml
-event_bus:
-  type: "redis_pub_sub"
-  events:
-    - name: "survey.submitted"
-      publisher: "frontend"
-      subscribers: ["requirement-analyzer"]
-
-    - name: "file.uploaded"
-      publisher: "frontend"
-      subscribers: ["document-parser"]
-
-    - name: "requirement.analyzed"
-      publisher: "requirement-analyzer"
-      subscribers: ["prompt-builder"]
-
-    - name: "document.parsed"
-      publisher: "document-parser"
-      subscribers: ["prompt-builder"]
-
-    - name: "prompt.built"
-      publisher: "prompt-builder"
-      subscribers: ["code-generator"]
-
-    - name: "code.generated"
-      publisher: "code-generator"
-      subscribers: ["github-pusher", "activity_logger"]
-
-    - name: "github.pushed"
-      publisher: "github-pusher"
-      subscribers: ["netlify-deployer", "activity_logger"]
-
-    - name: "deployment.ready"
-      publisher: "netlify-deployer"
-      subscribers: ["e2e-test-runner", "slack-notifier"]
-
-    - name: "test.failed"
-      publisher: "e2e-test-runner"
-      subscribers: ["issue-resolver", "slack-notifier"]
-
-    - name: "issue.reported"
-      publisher: "slack-bot"
-      subscribers: ["issue-resolver"]
-
-    - name: "issue.resolved"
-      publisher: "issue-resolver"
-      subscribers: ["github-pusher", "netlify-deployer", "slack-notifier"]
-```
-
----
-
-### 2.6 Agent 실행 순서 (DAG)
-
-```mermaid
-graph TD
-    A[Survey Submitted] --> B[Requirement Analyzer]
-    C[File Uploaded] --> D[Document Parser]
-    B --> E[Prompt Builder]
-    D --> E
-    E --> F[Code Generator]
-    F --> G[GitHub Pusher]
-    G --> H[Netlify Deployer]
-    H --> I[E2E Test Runner]
-    I -->|Success| J[Complete]
-    I -->|Failure x3| K[Notify Human]
-    I -->|Failure| L[Issue Resolver]
-    L --> M[Issue Reported]
-    L --> F
-    L --> G
-    L --> H
-    L --> I
-```
-
----
-
-### 2.7 Agent 상태 관리
-
+**출력:**
 ```typescript
-enum AgentStatus {
-  IDLE = "idle",
-  RUNNING = "running",
-  WAITING = "waiting",  // 의존성 대기 중
-  COMPLETED = "completed",
-  FAILED = "failed",
-  RETRYING = "retrying",
-  CANCELLED = "cancelled"
+{
+  prdOptions: [
+    {
+      id: "conservative" | "standard" | "aggressive"
+      name: string
+      description: string
+      analysisMarkdown: string  // 전체 PRD 마크다운
+      analysis: {
+        businessRequirements: {...}
+        functionalRequirements: [...]
+        nonFunctionalRequirements: {...}
+        technicalRequirements: {...}
+        riskAssessment: [...]
+      }
+    }
+  ]
+  summary: {
+    complexityScore: number  // 1-100
+    estimatedTime: {
+      minutes: number
+      muggleEquivalent: string
+    }
+  }
 }
+```
 
-interface AgentState {
-  agent_id: string;
-  status: AgentStatus;
-  started_at?: ISO8601;
-  completed_at?: ISO8601;
-  retry_count: number;
-  error?: {
-    message: string;
-    stack_trace?: string;
-    retryable: boolean;
-  };
-  output?: any;
-  attachments?: Attachment[];
-  comments?: Comment[];
+**특징:**
+- **3개 PRD 옵션 생성**: Conservative (MVP), Standard, Aggressive (Full-featured)
+- **LLM:** Claude Opus 4.5
+- **타임아웃:** 10분
+- **최대 재시도:** 3회
+
+---
+
+#### Agent 2: EpicStoryAgent (⭐ NEW)
+
+**역할:** Epic & Story 생성 (BMad Method + Moai ADK)
+
+**트리거:**
+```yaml
+event: "requirement.completed"
+condition: "user selected PRD"
+```
+
+**입력:**
+```typescript
+{
+  projectId: string
+  selectedPRD: PRDOption
+}
+```
+
+**출력:**
+```typescript
+{
+  epics: [
+    {
+      id: string  // "epic-1-user-authentication"
+      fileName: string
+      title: string
+      description: string
+      priority: "high" | "medium" | "low"
+      order: number
+      markdown: string  // Epic.md 내용
+    }
+  ]
+  stories: [
+    {
+      id: string  // "story-1-1-login-page"
+      fileName: string
+      epicId: string
+      title: string
+      description: string
+      acceptanceCriteria: string[]
+      storyPoints: number
+      priority: "high" | "medium" | "low"
+      order: number
+      epicOrder: number
+      markdown: string  // Story.md 내용
+    }
+  ]
+  summary: {
+    totalEpics: number
+    totalStories: number
+    totalStoryPoints: number
+  }
+}
+```
+
+**특징:**
+- **BMad Method 기반:** Epic 분해
+- **Moai ADK 기반:** Story 분해 (2-5분 태스크)
+- **LLM:** Claude Sonnet 4.5
+- **타임아웃:** 30분
+- **파일 생성:**
+  - `projects/<projectId>/docs/Epic.md`
+  - `projects/<projectId>/docs/story-*.md`
+
+---
+
+#### Agent 3: ScrumMasterAgent (⭐ NEW)
+
+**역할:** Task 관리 및 개발 계획
+
+**트리거:**
+```yaml
+event: "epic-story.completed"
+```
+
+**입력:**
+```typescript
+{
+  projectId: string
+  epics: Epic[]
+  stories: Story[]
+  prd: PRDOption
+}
+```
+
+**출력:**
+```typescript
+{
+  tasks: [
+    {
+      id: string  // "task-1"
+      storyId: string
+      epicId: string
+      title: string
+      description: string
+      priority: "high" | "medium" | "low"
+      status: "pending" | "in_progress" | "completed" | "failed"
+      estimatedMinutes: number
+      dependencies: string[]  // 다른 Task ID
+    }
+  ]
+  executionPlan: {
+    totalTasks: number
+    estimatedTotalMinutes: number
+    suggestedOrder: string[]  // Task ID 순서
+  }
+}
+```
+
+**특징:**
+- **Task 우선순위 지정**
+- **의존성 관리**
+- **개발 계획 수립**
+
+---
+
+#### Agent 4: DocumentParserAgent
+
+**역할:** 업로드된 파일 파싱 (업스테이지 API)
+
+**트리거:**
+```yaml
+event: "file.uploaded"
+parallel: true  # 각 파일별 병렬 실행
+```
+
+**입력:**
+```typescript
+{
+  s3Key: string
+  fileName: string
+  fileType: string
+  fileSize: number
+  userDescription: string
+}
+```
+
+**출력:**
+```typescript
+{
+  success: boolean
+  parsedDocument?: {
+    text: string
+    layout: any
+    tables: any
+    confidence: number
+  }
+  error?: string
+}
+```
+
+**특징:**
+- **업스테이지 Document AI** 사용
+- **OCR + 레이아웃 분석**
+- **병렬 처리** (각 파일 독립적으로)
+
+---
+
+### 3.2 Phase 2: 개발
+
+#### Agent 5: DeveloperAgent (⭐ NEW)
+
+**역할:** Task 수행 및 코드 개발
+
+**트리거:**
+```yaml
+event: "task.assigned"
+```
+
+**입력:**
+```typescript
+{
+  projectId: string
+  taskId: string
+  task: Task
+  prd: PRDOption
+  story: Story
+}
+```
+
+**출력:**
+```typescript
+{
+  currentPhase: "development" | "completed"
+  currentTask?: {
+    id: string
+    title: string
+    description: string
+  }
+  completedTasks: string[]
+  generatedFiles: [
+    {
+      path: string  // "apps/web/src/app/login/page.tsx"
+      content: string
+      type: "component" | "page" | "api" | "util" | "other"
+    }
+  ]
+  changes: [
+    {
+      file: string
+      diff: string
+    }
+  ]
+  summary: {
+    totalTasksCompleted: number
+    filesCreated: number
+    filesModified: number
+  }
+}
+```
+
+**특징:**
+- **Task별 순차적 실행**
+- **shadcn/ui 컴포넌트 활용**
+- **프로젝트 구조:** `projects/<projectId>/apps/web`, `projects/<projectId>/apps/api`
+- **LLM:** Claude Sonnet 4.5
+- **타임아웃:** 60분
+
+---
+
+#### Agent 6: CodeReviewerAgent (⭐ NEW)
+
+**역할:** 생성된 코드 리뷰
+
+**트리거:**
+```yaml
+event: "development.completed"
+```
+
+**입력:**
+```typescript
+{
+  projectId: string
+  generatedFiles: GeneratedFile[]
+  changes: Change[]
+}
+```
+
+**출력:**
+```typescript
+{
+  reviewResult: {
+    totalFiles: number
+    approvedFiles: number
+    filesRequiringChanges: number
+    criticalIssues: number
+  }
+  issues: [
+    {
+      file: string
+      severity: "critical" | "major" | "minor"
+      description: string
+      suggestedFix: string
+    }
+  ]
 }
 ```
 
 ---
 
-### 2.8 Agent Activity Log 형식
+#### Agent 7: TesterAgent (⭐ NEW)
 
+**역할:** 테스트 수행
+
+**트리거:**
 ```yaml
-activity_log:
-  format: "markdown"
-  structure: |
-    # Agent Activity Log: {agent_name}
+event: "code-review.completed"
+```
 
-    **Execution ID:** {execution_id}
-    **Started At:** {timestamp}
-    **Triggered By:** {trigger_event}
+**입력:**
+```typescript
+{
+  projectId: string
+  reviewedCode: any
+}
+```
 
-    ## Execution Summary
-    - **Status:** {status}
-    - **Duration:** {duration}
-    - **Retries:** {retry_count}
-
-    ## Steps Performed
-    {steps}
-
-    ## Files Created/Modified
-    {file_changes}
-
-    ## Decisions Made
-    {decisions}
-
-    ## Errors Encountered
-    {errors}
-
-    ## Attachments
-    {attachments}
-
-    ## Comments
-    {comments}
-
-    ## Output
-    ```json
-    {output}
-    ```
-
-storage:
-  type: "s3"
-  bucket: "magic-wand-activity-logs"
-  retention_days: 90
+**출력:**
+```typescript
+{
+  testResults: {
+    unitTests: {
+      total: number
+      passed: number
+      failed: number
+    }
+    integrationTests: {
+      total: number
+      passed: number
+      failed: number
+    }
+  }
+  testCoverage: {
+    lines: number
+    functions: number
+    branches: number
+  }
+}
 ```
 
 ---
 
-### 2.9 Agent 실패 처리 및 롤백
+#### Agent 8: PromptBuilderAgent
 
+**역할:** 개발 컨텍스트를 Claude Code 프롬프트로 변환
+
+**트리거:**
 ```yaml
-failure_handling:
-  strategy: "checkpoint_and_rollback"
+event: "testing.completed"
+```
 
-  checkpoints:
-    - name: "requirements_analyzed"
-      agent: "requirement-analyzer"
-      rollback_action: "use_fallback_template"
+**입력:**
+```typescript
+{
+  projectId: string
+  prd: PRDOption
+  epics: Epic[]
+  stories: Story[]
+  generatedFiles: GeneratedFile[]
+}
+```
 
-    - name: "documents_parsed"
-      agent: "document-parser"
-      rollback_action: "continue_without_parsed_docs"
+**출력:**
+```typescript
+{
+  claudeCodePrompt: string
+  generationPlan: {
+    phases: string[]
+    estimatedSteps: number
+    riskFactors: string[]
+  }
+  attachments: [
+    {
+      type: string
+      url: string
+      description: string
+    }
+  ]
+}
+```
 
-    - name: "prompt_built"
-      agent: "prompt-builder"
-      rollback_action: "use_cached_prompt"
+**특징:**
+- 개발된 코드를 바탕으로 최종 프롬프트 생성
 
-    - name: "code_generated"
-      agent: "code-generator"
-      rollback_action: "restore_from_git_history"
+---
 
-    - name: "github_pushed"
-      agent: "github-pusher"
-      rollback_action: "force_push_previous_commit"
+### 3.3 Phase 3: 빌드 및 배포
 
-    - name: "netlify_deployed"
-      agent: "netlify-deployer"
-      rollback_action: "rollback_deployment"
+#### Agent 9: CodeGeneratorAgent
 
-    - name: "tests_passed"
-      agent: "e2e-test-runner"
-      rollback_action: "keep_previous_deployment"
+**역할:** 최종 코드 생성 및 빌드
 
-  rollback_triggers:
-    - "agent.max_retries_exceeded"
-    - "user.cancel_requested"
-    - "critical.error"
-    - "timeout.exceeded"
+**트리거:**
+```yaml
+event: "prompt.built"
+```
 
-  recovery_options:
-    - label: "Resume from checkpoint"
-      action: "resume_from_last_checkpoint"
-      available: true
+**입력:**
+```typescript
+{
+  claudeCodePrompt: string
+  attachments: Attachment[]
+  projectId: string
+}
+```
 
-    - label: "Retry failed agent"
-      action: "retry_agent"
-      available: "retry_count < 3"
-
-    - label: "Skip and continue"
-      action: "skip_agent"
-      available: "agent.is_skippable"
-
-    - label: "Start over"
-      action: "start_fresh"
-      available: true
+**출력:**
+```typescript
+{
+  generationResult: {
+    status: "success" | "partial" | "failed"
+    filesCreated: string[]
+    codeStructure: any
+    generationLogs: string[]
+  }
+  codeQualityMetrics: {
+    totalLines: number
+    testCoverage: number
+    eslintErrors: number
+    typeErrors: number
+  }
+}
 ```
 
 ---
 
-## 3. 사용자 페르소나
+#### Agent 10: GitHubPusherAgent
 
-(이전 내용과 동일)
+**역할:** GitHub 레포지토리 생성 및 코드 푸시
 
----
+**트리거:**
+```yaml
+event: "code.generated"
+```
 
-## 4. 사용자 시나리오
+**입력:**
+```typescript
+{
+  projectId: string
+  codeDirectory: string
+  repoName: string
+  githubPat: string
+}
+```
 
-(이전 내용과 동일)
-
----
-
-## 5. 기능 요구사항
-
-(이전 내용과 동일, Agent 관련 부분 추가)
-
----
-
-## 6. 기술 스택
-
-### 6.1 MAGIC WAND 서비스
-
-#### Frontend (모바일 웹)
-- **Framework:** Next.js 14+ (App Router)
-- **UI Library:** shadcn/ui
-- **Styling:** Tailwind CSS
-- **Forms:** React Hook Form + Zod
-- **State Management:** Zustand
-
-#### Backend (Express 서버)
-- **Runtime:** Node.js 20+
-- **Framework:** Express
-- **API:** RESTful API
-- **Job Queue:** Bull (Redis)
-- **ORM:** Prisma
-- **Database:** Postgres (Netlify DB)
-- **File Storage:** AWS S3
-
-#### Agent Orchestration
-- **Claude Code CLI:** 핵심 코드 생성
-- **Event Bus:** Redis Pub/Sub
-- **State Management:** Redis
-- **Activity Logging:** S3 + Markdown
-
-#### External APIs
-- **업스테이지:** OCR/문서 파싱
-- **GitHub API:** 레포지토리 관리
-- **Netlify API:** 배포 자동화
-- **Slack API:** 이슈 리포트
+**출력:**
+```typescript
+{
+  repoUrl: string
+  commitHash: string
+  branch: string
+  filesPushed: number
+}
+```
 
 ---
 
-## 7. 데이터 모델
+#### Agent 11: NetlifyDeployerAgent
 
-(이전 내용에 Agent 상태 관련 테이블 추가)
+**역할:** Netlify 배포
+
+**트리거:**
+```yaml
+event: "github.pushed"
+```
+
+**입력:**
+```typescript
+{
+  projectId: string
+  githubRepoUrl: string
+  githubBranch: string
+  subdomain: string
+  netlifyAuthToken: string
+}
+```
+
+**출력:**
+```typescript
+{
+  siteId: string
+  deploymentUrl: string
+  status: "PENDING" | "IN_PROGRESS" | "DEPLOYED" | "FAILED"
+  logs: any
+}
+```
+
+---
+
+### 3.4 Phase 4: 테스트 및 유지보수
+
+#### Agent 12: E2ETestRunnerAgent
+
+**역할:** E2E 테스트 실행
+
+**트리거:**
+```yaml
+event: "deployment.completed"
+```
+
+**입력:**
+```typescript
+{
+  projectId: string
+  deployedUrl: string
+  testRequirements: any
+  complexityScore: number
+}
+```
+
+**출력:**
+```typescript
+{
+  testResults: {
+    totalTests: number
+    passed: number
+    failed: number
+    skipped: number
+  }
+  failedTests: [
+    {
+      testName: string
+      errorMessage: string
+      stackTrace: string
+      screenshotUrl: string
+    }
+  ]
+  coverageReport: {
+    lines: number
+    functions: number
+    branches: number
+  }
+}
+```
+
+---
+
+#### Agent 13: IssueResolverAgent
+
+**역할:** 이슈 자동 해결
+
+**트리거:**
+```yaml
+event: "issue.reported"
+source: "slack"
+```
+
+**입력:**
+```typescript
+{
+  issueReport: {
+    slackChannel: string
+    slackTs: string
+    userMessage: string
+  }
+  context: {
+    projectId: string
+    deploymentUrl: string
+    githubBranch: string
+  }
+}
+```
+
+**출력:**
+```typescript
+{
+  resolutionResult: {
+    issueType: "bug" | "feature" | "improvement" | "cannot_fix"
+    rootCause: string
+    fixApplied: boolean
+    fixDescription: string
+    newCommitSha: string
+    redeployed: boolean
+  }
+}
+```
+
+---
+
+## 4. 데이터 모델
+
+### 4.1 Project 모델 (업데이트)
+
+```prisma
+model Project {
+  id            String   @id @default(cuid())
+  name          String
+  description   String   @db.Text
+  wizardLevel   WizardLevel @default(APPRENTICE)
+  isArchived    Boolean  @default(false)
+
+  // ⭐ NEW: Epic & Story 관련 필드
+  epicMarkdown  String?  @db.Text  // Epic.md 전체 내용 (JSON)
+  storyFiles    Json?              // Story[] 배열 (JSON)
+
+  // 기존 필드들
+  sessionFiles  SessionFile[]
+  surveyAnswer  SurveyAnswer?
+  deployment    Deployment?
+  issueReports  IssueReport[]
+  agentExecutions AgentExecution[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+```
+
+### 4.2 AgentExecution 모델
 
 ```prisma
 model AgentExecution {
@@ -1135,9 +811,12 @@ model AgentExecution {
   output          Json?
   error           Json?
 
+  // ⭐ NEW: Activity Log URL (S3)
+  activityLogUrl  String?  // S3에 저장된 Activity Log 파일 URL
+
+  // 첨부파일 및 코멘트
   attachments     Json?    // Attachment[]
   comments        Json?    // Comment[]
-  activityLogUrl  String?  // S3 URL
 
   project         Project  @relation(fields: [projectId], references: [id])
 }
@@ -1155,82 +834,148 @@ enum AgentStatus {
 
 ---
 
-## 8. API 설계
+## 5. API 설계
 
-(이전 내용에 Agent 상태 조회 API 추가)
+### 5.1 Magic 워크플로우 관련 API
 
-#### GET /api/agents/executions/:projectId
-Agent 실행 상태 조회
+#### POST /api/magic/start
+"MVP 생성" 시작 (Magic Wand)
 
-#### GET /api/agents/activity-log/:executionId
-Activity Log 조회 (Markdown)
+#### GET /api/magic/status/:projectId
+진행 상황 조회
+
+#### GET /api/magic/agents/:projectId
+Agent 실행 내역 조회
+
+#### GET /api/magic/activity/:projectId
+현재 실행 중인 Agent의 활동 로그 (실시간)
+
+#### POST /api/magic/restart/:projectId/:agentId
+특정 Agent 재시작
+
+#### POST /api/magic/select-prd/:projectId
+사용자가 PRD 선택
 
 ---
 
-## 9. UI/UX 가이드
+## 6. 기술 스택
 
-(이전 내용과 동일)
+### 6.1 MAGIC WAND 서비스
+
+#### Frontend
+- Next.js 14.1.0 (App Router)
+- React 18.2.0
+- TypeScript 5.3.3
+- Tailwind CSS
+- Radix UI (shadcn/ui)
+- Zustand
+- React Hook Form
+
+#### Backend
+- Express 4.18.2
+- TypeScript 5.3.3
+- Prisma ORM
+- PostgreSQL (Netlify DB)
+- Redis (Bull Queue)
+
+#### Agent System
+- Anthropic Claude (Opus 4.5, Sonnet 4.5)
+- 업스테이지 API (문서 파싱)
+- GitHub API
+- Netlify API
+- Slack API
 
 ---
 
-## 10. 개발 단계 (Phases)
+## 7. 개발 단계 (Phases)
 
-### Phase 1: Agent 시스템 기반 (Week 1-2)
-- [ ] Agent 실행 프레임워크 구축
-- [ ] Event Bus 구현 (Redis Pub/Sub)
-- [ ] Context Sharing 시스템
-- [ ] Activity Log 기능
-- [ ] Agent 상태 관리
+### Phase 1: Agent 시스템 기반 (완료) ✅
+- [x] Agent 실행 프레임워크 구축
+- [x] Event Bus 구현 (Redis Pub/Sub)
+- [x] Context Sharing 시스템
+- [x] Activity Log 기능
+- [x] Agent 상태 관리
 
-### Phase 2: 핵심 Agent 개발 (Week 3-6)
-- [ ] Requirement Analyzer Agent
-- [ ] Document Parser Agent
-- [ ] Prompt Builder Agent
-- [ ] Code Generator Agent
-- [ ] GitHub Pusher Agent
-- [ ] Netlify Deployer Agent
-- [ ] E2E Test Runner Agent
+### Phase 2: 핵심 Agent 개발 (진행 중) 🔄
+- [x] Requirement Analyzer Agent
+- [x] Epic Story Agent
+- [x] Scrum Master Agent
+- [x] Developer Agent
+- [x] Code Reviewer Agent
+- [x] Tester Agent
+- [x] Prompt Builder Agent
+- [x] Code Generator Agent
+- [x] GitHub Pusher Agent
+- [x] Netlify Deployer Agent
+- [x] E2E Test Runner Agent
+- [x] Issue Resolver Agent
+- [x] Document Parser Agent
 
-### Phase 3: 이슈 해결 Agent (Week 7-8)
-- [ ] Issue Resolver Agent
-- [ ] Slack Bot 연동
-- [ ] 자동 수정 및 재배파 파이프라인
+### Phase 3: 프론트엔드 (완료) ✅
+- [x] 모바일 웹 개발
+- [x] 실시간 상태 표시
+- [x] 파일 업로드
 
-### Phase 4: 프론트엔드 (Week 3-10, 병행)
-- [ ] 모바일 웹 개발
-- [ ] 실시간 상태 표시
-- [ ] 파일 업로드
-
-### Phase 5: 테스트 및 최적화 (Week 11-12)
+### Phase 4: 테스트 및 최적화 (진행 중) 🔄
 - [ ] Agent 간 통합 테스트
 - [ ] 실패 시나리오 테스트
 - [ ] 성능 최적화
 
 ---
 
-## 11. 리스크 및 완화 계획
+## 8. 리스크 및 완화 계획
 
-| 리스크 | 영향 | 확률 | 완화 계획 |
-|--------|------|------|-----------|
-| Agent가 의도한 대로 동작하지 않음 | 높음 | 중 | 체크포인트/롤백 시스템, 사람 개입 지점 |
-| Claude Code 생성 품질 낮음 | 높음 | 중 | 템플릿 백업, 재시도 로직 |
-| Agent 간 통신 실패 | 중 | 낮 | Event Bus 재시도, 메시지 영구화 |
-| 전체 파이프라인 실패 | 높음 | 낮 | 체크포인트별 롤백 |
-
----
-
-## 12. 성공 지표 (KPIs)
-
-- Agent 성공률: 90% 이상
-- 전체 파이프라인 성공률: 85% 이상
-- 평균 생성 시간: 3시간 이내
-- 자동 이슈 해결률: 70% 이상
+| 리스크 | 영향 | 확률 | 완화 계획 | 상태 |
+|--------|------|------|-----------|------|
+| Agent 간 통신 실패 | 높음 | 중 | Event Bus 재시도, 메시지 영구화 | 🔄 진행 중 |
+| Epic/Story 품질 낮음 | 높음 | 중 | BMad Method 가이드라인 준수 | 🔄 진행 중 |
+| LLM API Rate Limit | 중 | 중 | 지수 제한, 재시도 로직 | ✅ 완료 |
+| GitHub/Netlify API 장애 | 중 | 낮 | 체크포인트/롤백 시스템 | 🔄 진행 중 |
+| 전체 파이프라인 실패 | 높음 | 낮 | 체크포인트별 롤백 | 🔄 진행 중 |
 
 ---
 
-## 13. 부록
+## 9. 성공 지표 (KPIs)
 
-### 13.1 Agent 실행 예시
+- Agent 성공률: **90% 이상**
+- 전체 파이프라인 성공률: **85% 이상**
+- 평균 생성 시간: **3시간 이내**
+- Epic/Story 품질: **사용자 만족도 80% 이상**
+- 자동 이슈 해결률: **70% 이상**
+
+---
+
+## 10. Superpowers 워크플로우 통합
+
+### 10.1 Epic/Story 기반 개발
+
+**BMad Method 준수:**
+1. **Requirement Analyzer** → PRD 생성
+2. **Epic Story** → Epic/Story 분해
+3. **Scrum Master** → Task 관리
+4. **Developer** → 코드 개발
+5. **Code Reviewer** → 코드 리뷰
+6. **Tester** → 테스트
+
+### 10.2 Story 단위 개발
+
+**각 Story는 다음을 포함:**
+- 명확한 Acceptance Criteria
+- 2-5분 태스크 크기
+- 독립적으로 실행 가능
+
+### 10.3 Task 관리
+
+**ScrumMasterAgent가 수행:**
+- Task 우선순위 지정
+- 의존성 관리
+- 개발 계획 수립
+
+---
+
+## 11. Appendix
+
+### 11.1 Agent 실행 예시
 
 ```yaml
 execution_example:
@@ -1239,62 +984,88 @@ execution_example:
   uploaded_files: 3
 
   timeline:
-    - timestamp: "2025-01-15T10:00:00Z"
-      agent: "document-parser"
-      status: "running"
-      message: "파일 3개 파싱 시작"
-
-    - timestamp: "2025-01-15T10:05:00Z"
-      agent: "document-parser"
-      status: "completed"
-      message: "파일 파싱 완료 (OCR: 98% 신뢰도)"
-
-    - timestamp: "2025-01-15T10:10:00Z"
+    - timestamp: "2026-01-18T10:00:00Z"
       agent: "requirement-analyzer"
       status: "completed"
-      message: "요구사항 분석 완료 (복잡도: 65/100)"
+      message: "PRD 생성 완료 (3개 옵션)"
 
-    - timestamp: "2025-01-15T10:15:00Z"
+    - timestamp: "2026-01-18T10:05:00Z"
+      action: "user_selected_prd"
+      prd_id: "standard"
+
+    - timestamp: "2026-01-18T10:10:00Z"
+      agent: "epic-story"
+      status: "completed"
+      message: "Epic 3개, Story 12개 생성"
+
+    - timestamp: "2026-01-18T10:15:00Z"
+      agent: "scrum-master"
+      status: "completed"
+      message: "Task 15개 생성"
+
+    - timestamp: "2026-01-18T10:20:00Z"
+      agent: "developer"
+      status: "running"
+      message: "Task 1/15 개발 중..."
+
+    - timestamp: "2026-01-18T10:30:00Z"
+      agent: "developer"
+      status: "completed"
+      message: "Task 1 완료 (파일 3개 생성)"
+
+    - timestamp: "2026-01-18T10:35:00Z"
+      agent: "code-reviewer"
+      status: "completed"
+      message: "리뷰 완료 (승인)"
+
+    - timestamp: "2026-01-18T10:40:00Z"
+      agent: "tester"
+      status: "completed"
+      message: "테스트 통과 (3/3)"
+
+    ... (Task 2-15 반복) ...
+
+    - timestamp: "2026-01-18T13:00:00Z"
+      agent: "developer"
+      status: "completed"
+      message: "모든 Task 완료 (총 45개 파일)"
+
+    - timestamp: "2026-01-18T13:10:00Z"
       agent: "prompt-builder"
       status: "completed"
       message: "프롬프트 빌드 완료"
 
-    - timestamp: "2025-01-15T10:20:00Z"
-      agent: "code-generator"
-      status: "running"
-      message: "Claude Code로 코드 생성 중..."
-
-    - timestamp: "2025-01-15T12:30:00Z"
+    - timestamp: "2026-01-18T13:15:00Z"
       agent: "code-generator"
       status: "completed"
-      message: "코드 생성 완료 (파일 47개, 3,421줄)"
+      message: "코드 생성 완료 (빌드 성공)"
 
-    - timestamp: "2025-01-15T12:35:00Z"
+    - timestamp: "2026-01-18T13:20:00Z"
       agent: "github-pusher"
       status: "completed"
       message: "GitHub 푸시 완료 (commit: abc123)"
 
-    - timestamp: "2025-01-15T12:40:00Z"
+    - timestamp: "2026-01-18T13:30:00Z"
       agent: "netlify-deployer"
       status: "running"
       message: "Netlify 배포 중..."
 
-    - timestamp: "2025-01-15T12:48:00Z"
+    - timestamp: "2026-01-18T13:38:00Z"
       agent: "netlify-deployer"
       status: "completed"
       message: "배포 완료 (portfolio-abc12.netlify.app)"
 
-    - timestamp: "2025-01-15T12:50:00Z"
+    - timestamp: "2026-01-18T13:40:00Z"
       agent: "e2e-test-runner"
       status: "running"
       message: "E2E 테스트 실행 중..."
 
-    - timestamp: "2025-01-15T13:00:00Z"
+    - timestamp: "2026-01-18T13:50:00Z"
       agent: "e2e-test-runner"
       status: "completed"
       message: "테스트 통과 (24/24)"
 
-    - timestamp: "2025-01-15T13:00:00Z"
+    - timestamp: "2026-01-18T13:50:00Z"
       status: "complete"
       message: "🎉 MVP 생성 완료!"
 ```
@@ -1302,3 +1073,10 @@ execution_example:
 ---
 
 **문서 끝**
+
+**v2.0 변경사항:**
+- Superpowers 워크플로우 통합
+- Epic/Story 시스템 도입
+- Task 관리 시스템 도입
+- 13개 Agent로 확장
+- 데이터 모델 업데이트

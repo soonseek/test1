@@ -5,6 +5,10 @@ import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import EpicStoryView from './components/EpicStoryView';
+import DevelopmentView from './components/DevelopmentView';
+import DebuggingView from './components/DebuggingView';
+import FeatureAdditionView from './components/FeatureAdditionView';
 
 type AgentTab = 'overview' | 'requirement' | 'epic-story' | 'development' | 'debugging' | 'feature-addition' | 'errors';
 
@@ -19,6 +23,28 @@ interface AgentExecution {
   output?: any;
 }
 
+interface ApiErrorResponse {
+  error?: {
+    message?: string;
+  };
+}
+
+interface AgentExecutionsResponse {
+  executions: AgentExecution[];
+}
+
+interface GitHubCreateRepoResponse {
+  message: string;
+  repoName: string;
+  repoUrl: string;
+}
+
+interface DeployResponse {
+  message: string;
+  deploymentUrl: string;
+  subdomain: string;
+}
+
 export default function MagicPage() {
   const router = useRouter();
   const params = useParams();
@@ -27,29 +53,58 @@ export default function MagicPage() {
   const [activeTab, setActiveTab] = useState<AgentTab>('overview');
   const [agentExecutions, setAgentExecutions] = useState<AgentExecution[]>([]);
   const [loading, setLoading] = useState(false);
-  const [magicStarted, setMagicStarted] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reloadingAgents, setReloadingAgents] = useState<Set<string>>(new Set());
   const [selectedPRDId, setSelectedPRDId] = useState<string | null>(null);
   const [currentViewingPRDId, setCurrentViewingPRDId] = useState<string | null>(null);
   const [showGitHubModal, setShowGitHubModal] = useState(false);
   const [repoName, setRepoName] = useState('');
+  const [project, setProject] = useState<any>(null);
+  const [currentActivity, setCurrentActivity] = useState<{
+    activity: string | null;
+    agentName: string | null;
+    agentId: string | null;
+  }>({ activity: null, agentName: null, agentId: null });
 
   // Agent 상태 조회
   const fetchStatus = async () => {
     try {
       const response = await fetch(`http://localhost:4000/api/magic/agents/${projectId}`);
-      const data = await response.json();
+      const data = await response.json() as AgentExecutionsResponse;
       setAgentExecutions(data.executions || []);
+
+      // 프로젝트 정보도 가져오기
+      const projectResponse = await fetch(`http://localhost:4000/api/projects/${projectId}`);
+      const projectData = await projectResponse.json();
+      setProject(projectData.project);
     } catch (error) {
       console.error('[Magic Page] Failed to fetch agent status:', error);
+    }
+  };
+
+  // 현재 실행 중인 에이전트의 활동 로그 조회
+  const fetchActivity = async () => {
+    try {
+      const response = await fetch(`http://localhost:4000/api/magic/activity/${projectId}`);
+      const data = await response.json();
+      setCurrentActivity({
+        activity: data.activity,
+        agentName: data.agentName,
+        agentId: data.agentId,
+      });
+    } catch (error) {
+      console.error('[Magic Page] Failed to fetch activity:', error);
     }
   };
 
   // 주기적 상태 조회
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 3000);
+    fetchActivity(); // 활동 로그도 함께 조회
+    const interval = setInterval(() => {
+      fetchStatus();
+      fetchActivity();
+    }, 3000);
     return () => clearInterval(interval);
   }, [projectId]);
 
@@ -66,14 +121,13 @@ export default function MagicPage() {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json() as ApiErrorResponse;
         console.error('[Magic Page] Error:', error);
         alert(`오류: ${error.error?.message || '마법 시작 실패'}`);
         return;
       }
 
       console.log('[Magic Page] Magic started successfully');
-      setMagicStarted(true);
       await fetchStatus();
     } catch (error) {
       console.error('[Magic Page] Fetch error:', error);
@@ -96,7 +150,7 @@ export default function MagicPage() {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json() as ApiErrorResponse;
         alert(`재시작 실패: ${error.error?.message}`);
         return;
       }
@@ -131,12 +185,12 @@ export default function MagicPage() {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json() as ApiErrorResponse;
         alert(`배포 실패: ${error.error?.message || '알 수 없는 오류'}`);
         return;
       }
 
-      const data = await response.json();
+      const data = await response.json() as DeployResponse;
       alert(`배포 시작되었습니다!\n배포 URL: ${data.deploymentUrl || '생성 중...'}`);
     } catch (error) {
       console.error('[Magic Page] Deploy error:', error);
@@ -195,6 +249,37 @@ export default function MagicPage() {
     }
   };
 
+  // 개발 완료 여부 확인
+  const isDevelopmentCompleted = () => {
+    const developerExecution = agentExecutions.find(e => e.agentId === 'developer');
+    return developerExecution?.status === 'COMPLETED';
+  };
+
+  // 배포 가능 여부 확인
+  const canDeploy = () => {
+    const deployment = project?.deployment;
+    return deployment?.githubRepoUrl && deployment?.githubBranch;
+  };
+
+  // 개발 시작 (Epic & Story → Development)
+  const startDevelopment = async () => {
+    console.log('[Magic Page] Starting development workflow...');
+
+    try {
+      // Scrum Master 에이전트 시작
+      await fetch(`http://localhost:4000/api/magic/restart/${projectId}/scrum-master`, {
+        method: 'POST',
+      });
+
+      // 개발 탭으로 전환
+      setActiveTab('development');
+      await fetchStatus();
+    } catch (error) {
+      console.error('[Magic Page] Failed to start development:', error);
+      alert('개발 시작 실패');
+    }
+  };
+
   const tabs = [
     { id: 'overview' as AgentTab, label: '전체 보기', icon: '📊' },
     { id: 'requirement' as AgentTab, label: '요구사항 분석', icon: '✨', agentId: 'requirement-analyzer' },
@@ -206,54 +291,81 @@ export default function MagicPage() {
   ];
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-purple-900 via-purple-800 to-amber-600">
+    <main className="min-h-screen bg-gradient-to-br from-midnight via-deep-indigo to-midnight relative overflow-hidden">
+      {/* Background Blobs */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="mystical-blob absolute top-0 left-1/4 w-[450px] h-[450px] bg-vivid-purple" />
+        <div className="mystical-blob absolute bottom-0 right-1/4 w-[400px] h-[400px] bg-dark-magenta" style={{ animationDelay: '2s' }} />
+      </div>
+
       {/* Header */}
-      <div className="bg-black/20 backdrop-blur-lg border-b border-white/10">
-        <div className="max-w-7xl mx-auto px-4 py-4">
+      <div className="relative glass-card border-b border-vivid-purple/20">
+        <div className="max-w-7xl mx-auto px-4 py-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Link href="/">
-                <button className="text-white/70 hover:text-white">
-                  ← 뒤로가기
+                <button className="text-mystic-violet hover:text-white transition-colors flex items-center gap-2 group">
+                  <span className="group-hover:-translate-x-1 transition-transform">←</span>
+                  <span>뒤로가기</span>
                 </button>
               </Link>
-              <h1 className="text-2xl font-bold text-white">
-                🪄 MVP 생성 진행 상황
-              </h1>
+              <div>
+                <h1 className="text-3xl font-display font-bold text-white flex items-center gap-3">
+                  <span className="text-4xl animate-float">🪄</span>
+                  <span>{project?.name || 'MVP 생성'}</span>
+                </h1>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <button
                 onClick={handleRefresh}
                 disabled={refreshing}
-                className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-5 py-2.5 bg-white/5 hover:bg-white/10 text-white rounded-xl transition-all disabled:opacity-50 flex items-center gap-2 border border-vivid-purple/20 hover:border-vivid-purple/40 group"
               >
-                {refreshing ? '새로고침 중...' : '🔄 새로고침'}
+                <span className="text-lg group-hover:rotate-180 transition-transform duration-500">🔄</span>
+                <span className="font-medium">{refreshing ? '새로고침 중...' : '새로고침'}</span>
               </button>
-              {!magicStarted && (
+              {agentExecutions.length === 0 && (
                 <button
                   onClick={startMagic}
                   disabled={loading}
-                  className="px-6 py-2 bg-gradient-to-r from-purple-600 to-amber-500 text-white font-semibold rounded-lg hover:from-purple-700 hover:to-amber-600 transition-all disabled:opacity-50"
+                  className="px-7 py-2.5 bg-gradient-to-r from-vivid-purple to-dark-magenta text-white font-display font-bold rounded-xl hover:shadow-glow-xl transition-all disabled:opacity-50 flex items-center gap-2"
                 >
-                  {loading ? '시작 중...' : '마법 시작 🪄'}
+                  <span className="text-xl">🪄</span>
+                  <span>{loading ? '시작 중...' : '마법 시작'}</span>
                 </button>
               )}
-              {magicStarted && (
+              {agentExecutions.length > 0 && (
                 <>
-                  <div className="px-6 py-2 bg-green-600 text-white font-semibold rounded-lg">
-                    ✨ 마법 부리는 중...
+                  <div className="px-6 py-2.5 bg-green-600/20 border border-green-500/50 text-green-300 font-display font-bold rounded-xl flex items-center gap-2 animate-pulse-glow">
+                    <span className="text-xl">✨</span>
+                    <span>마법 부리는 중...</span>
                   </div>
                   <button
                     onClick={() => setShowGitHubModal(true)}
-                    className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors border border-white/20"
+                    disabled={!isDevelopmentCompleted()}
+                    className={`px-5 py-2.5 text-white rounded-xl transition-all border flex items-center gap-2 font-medium ${
+                      isDevelopmentCompleted()
+                        ? 'bg-royal-purple/30 border-vivid-purple/40 hover:bg-royal-purple/40 hover:border-vivid-purple/60'
+                        : 'bg-royal-purple/10 border-vivid-purple/20 opacity-50 cursor-not-allowed'
+                    }`}
+                    title={isDevelopmentCompleted() ? 'GitHub에 코드 푸시' : '개발 완료 후 사용 가능'}
                   >
-                    📦 GitHub 푸시
+                    <span>📦</span>
+                    <span>GitHub 푸시</span>
                   </button>
                   <button
                     onClick={() => handleDeploy()}
-                    className="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-500 hover:from-teal-700 hover:to-cyan-600 text-white font-semibold rounded-lg transition-all"
+                    disabled={!canDeploy()}
+                    className={`px-5 py-2.5 text-white font-display font-bold rounded-xl transition-all flex items-center gap-2 ${
+                      canDeploy()
+                        ? 'bg-gradient-to-r from-teal-600 to-cyan-500 hover:from-teal-700 hover:to-cyan-600 shadow-glow'
+                        : 'bg-gray-600/50 opacity-50 cursor-not-allowed'
+                    }`}
+                    title={canDeploy() ? 'Netlify에 배포' : 'GitHub 푸시 후 사용 가능'}
                   >
-                    🚀 배포
+                    <span>🚀</span>
+                    <span>배포</span>
                   </button>
                 </>
               )}
@@ -263,9 +375,9 @@ export default function MagicPage() {
       </div>
 
       {/* Tabs */}
-      <div className="bg-black/30 backdrop-blur-lg border-b border-white/10 overflow-x-auto">
+      <div className="relative glass-card border-b border-vivid-purple/20 overflow-x-auto">
         <div className="max-w-7xl mx-auto px-4">
-          <div className="flex gap-1 py-2">
+          <div className="flex gap-2 py-3">
             {tabs.map(tab => {
               const executions = tab.agentId ? getAgentExecutions(tab.agentId) : [];
               const lastExecution = executions[0];
@@ -275,14 +387,14 @@ export default function MagicPage() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-all ${
+                  className={`flex items-center gap-2.5 px-5 py-2.5 rounded-xl whitespace-nowrap transition-all ${
                     isActive
-                      ? 'bg-white/20 text-white'
-                      : 'text-white/70 hover:bg-white/10 hover:text-white'
+                      ? 'bg-vivid-purple/20 border-2 border-vivid-purple/50 text-white shadow-glow'
+                      : 'text-mystic-violet hover:bg-white/10 hover:text-white border-2 border-transparent'
                   }`}
                 >
-                  <span>{tab.icon}</span>
-                  <span className="text-sm font-medium">{tab.label}</span>
+                  <span className="text-lg">{tab.icon}</span>
+                  <span className="text-sm font-display font-semibold">{tab.label}</span>
                   {tab.agentId && lastExecution && (
                     <span className={`text-xs ${getStatusColor(lastExecution.status)}`}>
                       {lastExecution.status === 'COMPLETED' && '✓'}
@@ -303,7 +415,7 @@ export default function MagicPage() {
       </div>
 
       {/* Content */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="relative max-w-7xl mx-auto px-4 py-8">
         {activeTab === 'overview' && (
           <div className="space-y-4">
             <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
@@ -414,6 +526,7 @@ export default function MagicPage() {
             selectedPRDId={selectedPRDId}
             currentViewingPRDId={currentViewingPRDId}
             setCurrentViewingPRDId={setCurrentViewingPRDId}
+            currentActivity={currentActivity}
           />
         )}
 
@@ -423,6 +536,8 @@ export default function MagicPage() {
             onRestart={restartAgent}
             reloadingAgents={reloadingAgents}
             projectId={projectId}
+            currentActivity={currentActivity}
+            onStartDevelopment={startDevelopment}
           />
         )}
 
@@ -432,6 +547,8 @@ export default function MagicPage() {
             onRestart={restartAgent}
             reloadingAgents={reloadingAgents}
             projectId={projectId}
+            currentActivity={currentActivity}
+            onStartDevelopment={startDevelopment}
           />
         )}
 
@@ -479,7 +596,10 @@ export default function MagicPage() {
                 <input
                   type="text"
                   value={repoName}
-                  onChange={(e) => setRepoName(e.target.value)}
+                  onChange={(e) => {
+                    const target = e.target as HTMLInputElement;
+                    setRepoName(target.value);
+                  }}
                   placeholder="magic-wand-project"
                   className="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500"
                 />
@@ -510,12 +630,12 @@ export default function MagicPage() {
                       });
 
                       if (!response.ok) {
-                        const error = await response.json();
+                        const error = await response.json() as ApiErrorResponse;
                         alert(`레포지토리 생성 실패: ${error.error?.message || '알 수 없는 오류'}`);
                         return;
                       }
 
-                      const data = await response.json();
+                      const data = await response.json() as GitHubCreateRepoResponse;
                       setShowGitHubModal(false);
                       alert(`레포지토리가 생성되었습니다!\n${data.repoUrl}`);
                     } catch (error) {
@@ -622,12 +742,12 @@ function AgentDetailView({
                 {execution.output && (
                   <div className="mt-3">
                     <div className="text-green-400 text-sm font-medium mb-2">
-                      {execution.agentId === 'requirement-analyzer' && execution.output.analysisMarkdown
+                      {execution.agentId === 'requirement-analyzer' && execution.output?.analysisMarkdown
                         ? '요구사항 분석 보고서 (PRD)'
                         : '출력'}
                     </div>
 
-                    {execution.agentId === 'requirement-analyzer' && execution.output.analysisMarkdown ? (
+                    {execution.agentId === 'requirement-analyzer' && execution.output?.analysisMarkdown ? (
                       <div className="text-white text-sm bg-white/5 rounded p-4 overflow-x-auto max-h-96 custom-markdown">
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
@@ -659,7 +779,7 @@ function AgentDetailView({
                             a: ({href, children}) => <a href={href} className="text-purple-400 hover:text-purple-300 underline">{children}</a>,
                           }}
                         >
-                          {execution.output.analysisMarkdown}
+                          {execution.output?.analysisMarkdown || 'No analysis available'}
                         </ReactMarkdown>
                       </div>
                     ) : (
@@ -686,6 +806,7 @@ function RequirementAnalyzerView({
   selectedPRDId,
   currentViewingPRDId,
   setCurrentViewingPRDId,
+  currentActivity,
 }: {
   executions: AgentExecution[];
   onRestart: (agentId: string) => void;
@@ -694,6 +815,11 @@ function RequirementAnalyzerView({
   selectedPRDId: string | null;
   currentViewingPRDId: string | null;
   setCurrentViewingPRDId: (prdId: string | null) => void;
+  currentActivity: {
+    activity: string | null;
+    agentName: string | null;
+    agentId: string | null;
+  };
 }) {
   const lastExecution = executions[0];
 
@@ -728,7 +854,7 @@ function RequirementAnalyzerView({
               <div className="bg-white/5 rounded-lg p-6 border border-white/10">
                 <div className="text-white text-sm custom-markdown overflow-x-auto max-h-[600px]">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {viewingPRD.analysisMarkdown}
+                    {viewingPRD?.analysisMarkdown || 'No analysis available'}
                   </ReactMarkdown>
                 </div>
               </div>
@@ -754,7 +880,7 @@ function RequirementAnalyzerView({
                   <div className="bg-white/5 rounded p-3 mb-3 max-h-48 overflow-y-auto">
                     <div className="text-white/80 text-xs custom-markdown line-clamp-6">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {prd.analysisMarkdown}
+                        {prd?.analysisMarkdown || 'No analysis available'}
                       </ReactMarkdown>
                     </div>
                   </div>
@@ -810,6 +936,21 @@ function RequirementAnalyzerView({
           <div className="text-white/70 text-center py-8">
             <div className="animate-spin inline-block w-8 h-8 border-4 border-white/20 border-t-white rounded-full mb-4"></div>
             <p>요구사항 분석 중...</p>
+            {currentActivity.activity && currentActivity.agentId === 'requirement-analyzer' && (
+              <div className="mt-4 mx-auto max-w-md">
+                <div className="bg-white/5 backdrop-blur-sm rounded-lg p-3 border border-white/10">
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                    <span className="text-xs text-white/50 font-mono">현재 작업</span>
+                  </div>
+                  <p className="text-sm text-white/80 font-mono text-left truncate" title={currentActivity.activity}>
+                    {currentActivity.activity.length > 50
+                      ? currentActivity.activity.substring(0, 50) + '...'
+                      : currentActivity.activity}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -822,15 +963,15 @@ function RequirementAnalyzerView({
             {lastExecution.output && (
               <div>
                 <div className="text-green-400 text-sm font-medium mb-2">
-                  {lastExecution.agentId === 'requirement-analyzer' && lastExecution.output.analysisMarkdown
+                  {lastExecution.agentId === 'requirement-analyzer' && lastExecution.output?.analysisMarkdown
                     ? '요구사항 분석 보고서 (PRD)'
                     : '출력'}
                 </div>
 
-                {lastExecution.agentId === 'requirement-analyzer' && lastExecution.output.analysisMarkdown ? (
+                {lastExecution.agentId === 'requirement-analyzer' && lastExecution.output?.analysisMarkdown ? (
                   <div className="text-white text-sm bg-white/5 rounded p-4 overflow-x-auto max-h-96 custom-markdown">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {lastExecution.output.analysisMarkdown}
+                      {lastExecution.output?.analysisMarkdown || 'No analysis available'}
                     </ReactMarkdown>
                   </div>
                 ) : (
@@ -854,570 +995,5 @@ function RequirementAnalyzerView({
       default: return 'text-gray-400';
     }
   }
-}
-
-// Development View - BMad Method 기반 개발 워크플로우
-function DevelopmentView({
-  executions,
-  onRestart,
-  reloadingAgents,
-  projectId,
-}: {
-  executions: AgentExecution[];
-  onRestart: (agentId: string) => void;
-  reloadingAgents: Set<string>;
-  projectId: string;
-}) {
-  const [developmentStarted, setDevelopmentStarted] = useState(false);
-
-  // 개발 관련 에이전트 실행들 필터링
-  const developmentAgents = ['scrum-master', 'developer', 'code-reviewer', 'tester'];
-  const developmentExecutions = executions.filter(e => developmentAgents.includes(e.agentId));
-
-  // 최신 실행 상태 확인
-  const latestExecution = developmentExecutions.length > 0
-    ? developmentExecutions.reduce((latest, current) =>
-        new Date(current.startedAt) > new Date(latest.startedAt) ? current : latest
-      )
-    : null;
-
-  const startDevelopment = async () => {
-    console.log('[Development] Starting development workflow...');
-    setDevelopmentStarted(true);
-
-    try {
-      // Scrum Master 에이전트 시작
-      await fetch(`http://localhost:4000/api/magic/restart/${projectId}/scrum-master`, {
-        method: 'POST',
-      });
-    } catch (error) {
-      console.error('[Development] Failed to start:', error);
-      alert('개발 시작 실패');
-    }
-  };
-
-  if (!developmentStarted && !latestExecution) {
-    return (
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-        <div className="text-center py-12">
-          <div className="text-6xl mb-4">💻</div>
-          <h2 className="text-2xl font-bold text-white mb-4">BMad Method 기반 개발</h2>
-          <p className="text-white/70 mb-8 max-w-2xl mx-auto">
-            Scrum Master가 Epic & Story를 분석하여 Task List를 생성하고,<br />
-            Developer가 개발을 수행하며 Code Reviewer와 Tester가 품질을 검증합니다.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 max-w-4xl mx-auto">
-            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
-              <div className="text-3xl mb-2">🎯</div>
-              <h3 className="text-white font-semibold mb-1">Scrum Master</h3>
-              <p className="text-white/60 text-sm">Task List 생성/관리</p>
-            </div>
-            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
-              <div className="text-3xl mb-2">👨‍💻</div>
-              <h3 className="text-white font-semibold mb-1">Developer</h3>
-              <p className="text-white/60 text-sm">개발 수행</p>
-            </div>
-            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
-              <div className="text-3xl mb-2">🔍</div>
-              <h3 className="text-white font-semibold mb-1">Code Reviewer</h3>
-              <p className="text-white/60 text-sm">코드 리뷰</p>
-            </div>
-            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
-              <div className="text-3xl mb-2">🧪</div>
-              <h3 className="text-white font-semibold mb-1">Tester</h3>
-              <p className="text-white/60 text-sm">UI/API/DB 테스트</p>
-            </div>
-          </div>
-
-          <button
-            onClick={startDevelopment}
-            className="px-8 py-3 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg text-lg transition-all"
-          >
-            🚀 개발 시작하기
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // 개발 진행 중 UI
-  return (
-    <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-      <div className="text-center py-12">
-        <div className="animate-spin inline-block w-16 h-16 border-4 border-white/20 border-t-white rounded-full mb-6"></div>
-        <h3 className="text-xl font-semibold text-white mb-2">개발 진행 중...</h3>
-        {latestExecution && (
-          <p className="text-white/70">
-            현재: {latestExecution.agentName} ({latestExecution.status})
-          </p>
-        )}
-
-        <div className="mt-8 max-w-4xl mx-auto">
-          <div className="space-y-3">
-            {developmentAgents.map(agentId => {
-              const agentExec = executions.find(e => e.agentId === agentId);
-              const status = agentExec?.status || 'IDLE';
-
-              const labels: Record<string, string> = {
-                'scrum-master': '🎯 Scrum Master',
-                'developer': '👨‍💻 Developer',
-                'code-reviewer': '🔍 Code Reviewer',
-                'tester': '🧪 Tester',
-              };
-
-              return (
-                <div
-                  key={agentId}
-                  className={`p-4 rounded-lg border transition-all ${
-                    status === 'RUNNING'
-                      ? 'bg-yellow-500/10 border-yellow-500/30'
-                      : status === 'COMPLETED'
-                      ? 'bg-green-500/10 border-green-500/30'
-                      : status === 'FAILED'
-                      ? 'bg-red-500/10 border-red-500/30'
-                      : 'bg-white/5 border-white/10'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-white font-medium">{labels[agentId]}</span>
-                    <span className={`text-sm ${
-                      status === 'RUNNING' ? 'text-yellow-400' :
-                      status === 'COMPLETED' ? 'text-green-400' :
-                      status === 'FAILED' ? 'text-red-400' :
-                      'text-white/50'
-                    }`}>
-                      {status === 'IDLE' ? '대기 중' :
-                       status === 'RUNNING' ? '실행 중...' :
-                       status === 'COMPLETED' ? '완료 ✅' :
-                       status === 'FAILED' ? '실패 ❌' : status}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Debugging View - 디버깅 및 이슈 해결
-function DebuggingView({
-  executions,
-  onRestart,
-  reloadingAgents,
-  projectId,
-}: {
-  executions: AgentExecution[];
-  onRestart: (agentId: string) => void;
-  reloadingAgents: Set<string>;
-  projectId: string;
-}) {
-  return (
-    <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-      <div className="text-center py-16">
-        <div className="text-6xl mb-4">🐛</div>
-        <h2 className="text-2xl font-bold text-white mb-4">디버깅</h2>
-        <p className="text-white/70 mb-8 max-w-2xl mx-auto">
-          개발 과정에서 발생한 이슈를 디버깅하고 해결합니다.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto mb-8">
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">📋 이슈 목록</h3>
-            <p className="text-white/60 text-sm">
-              발생한 에러와 경고를 확인하고 관리합니다
-            </p>
-          </div>
-
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">🔍 원인 분석</h3>
-            <p className="text-white/60 text-sm">
-              AI가 이슈의 원인을 분석하고 해결 방안을 제안합니다
-            </p>
-          </div>
-
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">🛠️ 자동 수정</h3>
-            <p className="text-white/60 text-sm">
-              간단한 이슈는 AI가 자동으로 수정합니다
-            </p>
-          </div>
-
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">✅ 수정 확인</h3>
-            <p className="text-white/60 text-sm">
-              수정 후 테스트를 통해 정상 동작을 확인합니다
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 max-w-2xl mx-auto">
-          <p className="text-yellow-300 text-sm">
-            ⚠️ 디버깅 기능은 현재 개발 중입니다. 곧 제공될 예정입니다.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Feature Addition View - 기능 추가
-function FeatureAdditionView({
-  executions,
-  onRestart,
-  reloadingAgents,
-  projectId,
-}: {
-  executions: AgentExecution[];
-  onRestart: (agentId: string) => void;
-  reloadingAgents: Set<string>;
-  projectId: string;
-}) {
-  return (
-    <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-      <div className="text-center py-16">
-        <div className="text-6xl mb-4">➕</div>
-        <h2 className="text-2xl font-bold text-white mb-4">기능추가</h2>
-        <p className="text-white/70 mb-8 max-w-2xl mx-auto">
-          새로운 기능을 추가하고 기존 기능을 확장합니다.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto mb-8">
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">💡 기능 제안</h3>
-            <p className="text-white/60 text-sm">
-              추가할 수 있는 기능을 AI가 제안합니다
-            </p>
-          </div>
-
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">📝 요구사항 작성</h3>
-            <p className="text-white/60 text-sm">
-              새 기능의 요구사항을 명확히 정의합니다
-            </p>
-          </div>
-
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">🔨 개발 및 통합</h3>
-            <p className="text-white/60 text-sm">
-              기존 코드에 새 기능을 통합하여 개발합니다
-            </p>
-          </div>
-
-          <div className="bg-white/5 rounded-lg p-6 border border-white/10">
-            <h3 className="text-white font-semibold text-lg mb-3">✨ 테스트 및 배포</h3>
-            <p className="text-white/60 text-sm">
-              추가된 기능을 테스트하고 배포합니다
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 max-w-2xl mx-auto">
-          <p className="text-yellow-300 text-sm">
-            ⚠️ 기능추가 기능은 현재 개발 중입니다. 곧 제공될 예정입니다.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function EpicStoryView({
-  executions,
-  onRestart,
-  reloadingAgents,
-  projectId,
-}: {
-  executions: AgentExecution[];
-  onRestart: (agentId: string) => void;
-  reloadingAgents: Set<string>;
-  projectId: string;
-}) {
-  const [selectedEpicIndex, setSelectedEpicIndex] = useState<number>(0);
-  const [selectedStoryIndex, setSelectedStoryIndex] = useState<number | null>(null);
-  const lastExecution = executions[0];
-
-  if (!lastExecution || lastExecution.status === 'IDLE') {
-    return (
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-        <div className="text-white/70 text-center py-8">
-          아직 실행되지 않았습니다
-        </div>
-      </div>
-    );
-  }
-
-  // RUNNING 또는 COMPLETED 상태 모두에서 데이터 추출
-  const output = lastExecution.output || {};
-  const { epics = [], stories = [], summary } = output;
-
-  // Epic별 Story 그룹화
-  const getStoriesForEpic = (epicIndex: number) => {
-    const epic = epics[epicIndex];
-    if (!epic) return [];
-    return stories.filter((s: any) => s.epicId === epic.id);
-  };
-
-  const selectedEpicStories = selectedEpicIndex !== null ? getStoriesForEpic(selectedEpicIndex) : [];
-  const selectedStory = selectedStoryIndex !== null && selectedEpicStories[selectedStoryIndex]
-    ? selectedEpicStories[selectedStoryIndex]
-    : null;
-
-  // 진행 상황 표시 (RUNNING일 때)
-  if (lastExecution.status === 'RUNNING') {
-    return (
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-        <div className="text-center py-12">
-          <div className="animate-spin inline-block w-16 h-16 border-4 border-white/20 border-t-white rounded-full mb-6"></div>
-          <h3 className="text-xl font-semibold text-white mb-2">Epic & Story 생성 중...</h3>
-          {output.currentStep && (
-            <p className="text-white/70 mb-4">{output.currentStep}</p>
-          )}
-          {output.currentEpic && (
-            <div className="bg-white/5 rounded-lg p-3 mb-2">
-              <p className="text-white/80 text-sm">
-                📋 Epic 생성 중: {output.currentEpic.title}
-                <span className="ml-2 text-white/60">
-                  ({output.currentEpic.index} / {output.currentEpic.total})
-                </span>
-              </p>
-            </div>
-          )}
-          {output.currentStory && (
-            <div className="bg-white/5 rounded-lg p-3">
-              <p className="text-white/80 text-sm">
-                📝 Story 생성 중: {output.currentStory.title}
-                <span className="ml-2 text-white/60">
-                  (Epic {output.currentStory.epicIndex}, Story {output.currentStory.storyIndex} / {output.currentStory.totalStories})
-                </span>
-              </p>
-            </div>
-          )}
-
-          {/* 진행 상황 실시간 미리보기 (생성된 것부터 표시) */}
-          {(epics.length > 0 || stories.length > 0) && (
-            <div className="mt-8 text-left">
-              <div className="text-white/60 text-sm mb-3">진행 상황 미리보기:</div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                {/* Epic 목록 */}
-                <div className="space-y-2">
-                  <h4 className="text-white font-medium text-sm mb-2">Epic ({epics.length})</h4>
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {epics.map((epic: any, i: number) => (
-                      <div
-                        key={i}
-                        className={`p-2 rounded text-xs ${
-                          i === selectedEpicIndex ? 'bg-purple-500/20 border border-purple-500' : 'bg-white/5'
-                        }`}
-                      >
-                        <div className="text-white font-medium truncate">{epic.title}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Story 목록 */}
-                <div className="space-y-2">
-                  <h4 className="text-white font-medium text-sm mb-2">Story ({stories.length})</h4>
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {stories.slice(0, 10).map((story: any, i: number) => (
-                      <div
-                        key={i}
-                        className="p-2 rounded text-xs bg-white/5"
-                      >
-                        <div className="text-white/80 truncate text-xs">{story.title}</div>
-                      </div>
-                    ))}
-                    {stories.length > 10 && (
-                      <div className="text-white/50 text-xs p-2 text-center">
-                        +{stories.length - 10} more
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 최근 생성된 Story 상세 */}
-                {stories.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="text-white font-medium text-sm mb-2">최근 Story</h4>
-                    <div className="bg-white/5 rounded p-2 max-h-40 overflow-y-auto">
-                      <div className="text-white/80 text-xs whitespace-pre-wrap line-clamp-6">
-                        {stories[stories.length - 1].markdown}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (lastExecution.status === 'FAILED') {
-    return (
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold text-white">Epic & Story</h2>
-          <span className="text-red-400 text-sm">실패</span>
-        </div>
-
-        {lastExecution.error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
-            <div className="text-red-300 text-sm mb-4">{lastExecution.error.message}</div>
-            <button
-              onClick={() => onRestart(lastExecution.agentId)}
-              disabled={reloadingAgents.has(lastExecution.agentId)}
-              className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
-            >
-              {reloadingAgents.has(lastExecution.agentId) ? '재시작 중...' : '재시작'}
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // COMPLETED 상태 - 3단계 레이아웃
-  return (
-    <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-      {/* 헤더: Summary + 액션 버튼 */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-6">
-          <h2 className="text-xl font-semibold text-white">Epic & Story 완료 ✨</h2>
-          <div className="flex gap-4 text-sm">
-            <div className="text-white/70">{epics.length} Epic</div>
-            <div className="text-white/70">{stories.length} Story</div>
-            <div className="text-white/70">{summary?.totalStoryPoints || 0} Points</div>
-          </div>
-        </div>
-
-        {/* 액션 버튼 그룹 */}
-        <div className="flex gap-3">
-          <button
-            onClick={() => onRestart(lastExecution.agentId)}
-            disabled={reloadingAgents.has(lastExecution.agentId)}
-            className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm transition-colors disabled:opacity-50 border border-white/20"
-          >
-            {reloadingAgents.has(lastExecution.agentId) ? '재시작 중...' : '🔄 재시도'}
-          </button>
-          <button
-            onClick={() => {
-              // 개발 탭으로 전환 및 개발 시작 트리거
-              window.location.href = `#development`;
-              // 개발 에이전트 시작 로직은 추후 DevelopmentView에서 구현
-              console.log('[EpicStory] Starting development...');
-            }}
-            className="px-4 py-2 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg text-sm transition-all"
-          >
-            💻 개발 시작 →
-          </button>
-        </div>
-      </div>
-
-      {/* 3단계 레이아웃: Epic 목록 | Story 목록 | Story 뷰어 */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-[600px]">
-        {/* 1단계: Epic 목록 (1/4) */}
-        <div className="space-y-3">
-          <h3 className="text-white font-medium text-sm mb-2">Epic 목록</h3>
-          <div className="space-y-2 overflow-y-auto max-h-[550px] pr-2">
-            {epics.map((epic: any, index: number) => (
-              <div
-                key={index}
-                onClick={() => {
-                  setSelectedEpicIndex(index);
-                  setSelectedStoryIndex(null);
-                }}
-                className={`p-3 rounded-lg cursor-pointer transition-all ${
-                  index === selectedEpicIndex
-                    ? 'bg-purple-500/30 border border-purple-500'
-                    : 'bg-white/5 border border-white/20 hover:border-purple-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-white font-medium text-sm">{epic.title}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded ${
-                    epic.priority === 'high' ? 'bg-red-500/30 text-red-300' :
-                    epic.priority === 'medium' ? 'bg-yellow-500/30 text-yellow-300' :
-                    'bg-blue-500/30 text-blue-300'
-                  }`}>
-                    {epic.priority}
-                  </span>
-                </div>
-                <p className="text-white/60 text-xs line-clamp-2">{epic.description}</p>
-                <div className="text-white/50 text-xs mt-2">
-                  {getStoriesForEpic(index).length} stories
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 2단계: Story 목록 (1/4) */}
-        <div className="space-y-3">
-          <h3 className="text-white font-medium text-sm mb-2">
-            {selectedEpicStories.length > 0
-              ? epics[selectedEpicIndex]?.title
-              : 'Story 목록'}
-          </h3>
-          <div className="space-y-2 overflow-y-auto max-h-[550px] pr-2">
-            {selectedEpicStories.length > 0 ? (
-              selectedEpicStories.map((story: any, index: number) => (
-                <div
-                  key={index}
-                  onClick={() => setSelectedStoryIndex(index)}
-                  className={`p-3 rounded-lg cursor-pointer transition-all ${
-                    index === selectedStoryIndex
-                      ? 'bg-purple-500/30 border border-purple-500'
-                      : 'bg-white/5 border border-white/20 hover:border-purple-400'
-                  }`}
-                >
-                  <div className="flex items-start justify-between mb-1">
-                    <span className="text-white font-medium text-sm">{story.title}</span>
-                    <span className="text-xs bg-white/10 px-2 py-0.5 rounded text-white/70">
-                      {story.storyPoints}pt
-                    </span>
-                  </div>
-                  <p className="text-white/60 text-xs line-clamp-2">{story.description}</p>
-                </div>
-              ))
-            ) : (
-              <div className="text-white/50 text-sm text-center py-8">
-                Epic을 선택하면 Story가 표시됩니다
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 3단계: Story 상세 뷰어 (2/4) */}
-        <div className="lg:col-span-2 space-y-3">
-          <h3 className="text-white font-medium text-sm mb-2">
-            {selectedStory
-              ? `Story: ${selectedStory.title}`
-              : 'Story 상세'}
-          </h3>
-          <div className="bg-white/5 rounded-lg border border-white/10 h-[550px] overflow-y-auto">
-            {selectedStory ? (
-              <div className="p-4">
-                <div className="text-white text-sm custom-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {selectedStory.markdown}
-                  </ReactMarkdown>
-                </div>
-              </div>
-            ) : (
-              <div className="text-white/50 text-sm text-center py-8">
-                Story를 선택하면 상세 내용이 표시됩니다
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 

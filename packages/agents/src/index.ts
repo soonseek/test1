@@ -10,3 +10,4 @@ export * from './agents/GitHubPusherAgent';
 export * from './agents/NetlifyDeployerAgent';
 export * from './agents/E2ETestRunnerAgent';
 export * from './agents/IssueResolverAgent';
+export * from './agents/DocumentParserAgent';

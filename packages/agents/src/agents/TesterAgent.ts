@@ -27,6 +27,7 @@ interface TestFailure {
 
 interface TesterOutput {
   currentPhase: 'testing' | 'completed';
+  testType: 'story' | 'epic' | 'integration';
   testResult: 'pass' | 'fail';
   overallScore: number; // 0-100
   failures: TestFailure[];
@@ -80,51 +81,72 @@ export class TesterAgent extends Agent {
     });
 
     try {
-      // 1. Code Review 결과 확인 (Pass인 경우만 테스트)
-      const codeReviewerOutput = await this.getCodeReviewerOutput(input.projectId);
-
-      if (!codeReviewerOutput) {
-        throw new Error('Code Reviewer 실행 결과를 찾을 수 없습니다');
-      }
-
-      if (codeReviewerOutput.reviewResult === 'fail') {
-        await this.log('코드 리뷰 실패로 테스트 스킵');
-        return {
-          status: AgentStatus.COMPLETED,
-          output: {
-            currentPhase: 'completed',
-            testResult: 'fail',
-            overallScore: 0,
-            failures: [],
-            successes: [],
-            testCoverage: { ui: 0, api: 0, database: 0 },
-            summary: {
-              totalTests: 0,
-              passedTests: 0,
-              failedTests: 0,
-              highSeverityFailures: 0,
-            },
-          } as TesterOutput,
-        };
-      }
-
-      await this.log('코드 리뷰 Pass 확인, 테스트 시작');
-
-      // 2. 현재 작업 정보 로드
-      const developerOutput = await this.getDeveloperOutput(input.projectId);
-      const currentTask = developerOutput?.currentTask;
-      const story = await this.getStory(input.projectId, currentTask?.storyId);
+      // 1. Scrum Master 실행 결과 확인으로 테스트 타입 판별
       const scrumMasterOutput = await this.getScrumMasterOutput(input.projectId);
+      if (!scrumMasterOutput) {
+        throw new Error('Scrum Master 실행 결과를 찾을 수 없습니다');
+      }
 
-      // 3. 테스트 수행
-      const testResult = await this.performTesting(
-        developerOutput,
-        story,
-        scrumMasterOutput,
-        input
-      );
+      const currentPhase = scrumMasterOutput.currentPhase;
+      let testResult: TesterOutput;
+
+      // 2. Phase별 테스트 수행
+      if (currentPhase === 'epic-testing') {
+        // Epic 단위 테스트
+        testResult = await this.performEpicTesting(scrumMasterOutput, input);
+      } else if (currentPhase === 'integration-testing') {
+        // 통합 테스트
+        testResult = await this.performIntegrationTesting(scrumMasterOutput, input);
+      } else {
+        // Story 단위 테스트 (기존 로직)
+
+        // Code Review 결과 확인 (Pass인 경우만 테스트)
+        const codeReviewerOutput = await this.getCodeReviewerOutput(input.projectId);
+
+        if (!codeReviewerOutput) {
+          throw new Error('Code Reviewer 실행 결과를 찾을 수 없습니다');
+        }
+
+        if (codeReviewerOutput.reviewResult === 'fail') {
+          await this.log('코드 리뷰 실패로 테스트 스킵');
+          return {
+            status: AgentStatus.COMPLETED,
+            output: {
+              currentPhase: 'completed',
+              testType: 'story',
+              testResult: 'fail',
+              overallScore: 0,
+              failures: [],
+              successes: [],
+              testCoverage: { ui: 0, api: 0, database: 0 },
+              summary: {
+                totalTests: 0,
+                passedTests: 0,
+                failedTests: 0,
+                highSeverityFailures: 0,
+              },
+            } as TesterOutput,
+          };
+        }
+
+        await this.log('코드 리뷰 Pass 확인, Story 테스트 시작');
+
+        // 현재 작업 정보 로드
+        const developerOutput = await this.getDeveloperOutput(input.projectId);
+        const currentTask = developerOutput?.currentTask;
+        const story = await this.getStory(input.projectId, currentTask?.storyId);
+
+        // Story 테스트 수행
+        testResult = await this.performStoryTesting(
+          developerOutput,
+          story,
+          scrumMasterOutput,
+          input
+        );
+      }
 
       await this.log('테스트 완료', {
+        testType: testResult.testType,
         result: testResult.testResult,
         score: testResult.overallScore,
         failures: testResult.summary.failedTests,
@@ -205,7 +227,7 @@ export class TesterAgent extends Agent {
     return stories.find((s: any) => s.id === storyId);
   }
 
-  private async performTesting(
+  private async performStoryTesting(
     developerOutput: any,
     story: any,
     scrumMasterOutput: any,
@@ -268,6 +290,7 @@ export class TesterAgent extends Agent {
 
     const output: TesterOutput = {
       currentPhase: 'completed',
+      testType: 'story',
       testResult,
       overallScore,
       failures,
@@ -293,7 +316,7 @@ export class TesterAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 4096,
         temperature: 0.2,
         messages: [
@@ -333,7 +356,7 @@ export class TesterAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 4096,
         temperature: 0.2,
         messages: [
@@ -374,7 +397,7 @@ export class TesterAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 4096,
         temperature: 0.2,
         messages: [
@@ -702,6 +725,433 @@ Category: database, integration, edge-case
     } catch (error) {
       console.error('[Tester] Failed to update progress:', error);
     }
+  }
+
+  private async performEpicTesting(
+    scrumMasterOutput: any,
+    input: TesterInput
+  ): Promise<TesterOutput> {
+    await this.log('Epic 단위 테스트 시작', {
+      epicOrder: scrumMasterOutput.currentEpic?.order,
+    });
+
+    await this.updateProgress(input.projectId, {
+      currentPhase: 'testing' as const,
+      testType: 'epic' as const,
+      testResult: 'pass' as const,
+      failures: [],
+      testCoverage: { ui: 0, api: 0, database: 0 },
+    });
+
+    const failures: TestFailure[] = [];
+    const successes: string[] = [];
+
+    // Epic & Story 데이터 로드
+    const epicStoryData = await this.getEpicStoryData(input.projectId);
+    const currentEpicOrder = scrumMasterOutput.currentEpic?.order || 0;
+
+    // 해당 Epic의 모든 Story 찾기
+    const epic = epicStoryData.epics[currentEpicOrder - 1];
+    const storiesInEpic = epicStoryData.stories.filter((s: any) => s.epicId === epic.id);
+
+    await this.log('Epic 테스트', {
+      epic: epic?.title,
+      storyCount: storiesInEpic.length,
+    });
+
+    // Epic 단위 테스트 수행 (LLM 기반)
+    const prompt = this.buildEpicTestPrompt(epic, storiesInEpic, epicStoryData);
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 8192,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
+
+      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const testResults = this.parseEpicTestResponse(text);
+
+      failures.push(...testResults.failures);
+      successes.push(...testResults.successes);
+
+      await this.log('Epic 테스트 완료', {
+        failures: testResults.failures.length,
+        successes: testResults.successes.length,
+      });
+    } catch (error: any) {
+      await this.logError(error);
+      failures.push({
+        severity: 'high',
+        category: 'integration',
+        testType: 'manual',
+        scenario: 'Epic 테스트 실행',
+        expectedBehavior: 'Epic 테스트 성공',
+        actualBehavior: '테스트 실행 실패',
+        steps: ['Epic 테스트를 시도함'],
+        evidence: error.message,
+      });
+    }
+
+    // 테스트 커버리지 계산
+    const totalTests = successes.length + failures.length;
+    const testCoverage = {
+      ui: totalTests > 0 ? (successes.filter(s => s.includes('[UI]')).length / Math.max(successes.filter(s => s.includes('[UI]')).length + failures.filter(f => f.category === 'ui').length, 1)) * 100 : 100,
+      api: totalTests > 0 ? (successes.filter(s => s.includes('[API]')).length / Math.max(successes.filter(s => s.includes('[API]')).length + failures.filter(f => f.category === 'api').length, 1)) * 100 : 100,
+      database: totalTests > 0 ? (successes.filter(s => s.includes('[DATABASE]')).length / Math.max(successes.filter(s => s.includes('[DATABASE]')).length + failures.filter(f => f.category === 'database').length, 1)) * 100 : 100,
+    };
+
+    // 전체 점수 계산
+    const overallScore = this.calculateOverallScore(failures, totalTests, testCoverage);
+
+    // Pass/Fail 결정 (80점 이상이고 high severity failure가 없어야 함 - Epic 단위이므로 더 엄격)
+    const hasHighSeverity = failures.some(f => f.severity === 'high');
+    const testResult: 'pass' | 'fail' = overallScore >= 80 && !hasHighSeverity ? 'pass' : 'fail';
+
+    const output: TesterOutput = {
+      currentPhase: 'completed',
+      testType: 'epic',
+      testResult,
+      overallScore,
+      failures,
+      successes,
+      testCoverage,
+      summary: {
+        totalTests,
+        passedTests: successes.length,
+        failedTests: failures.length,
+        highSeverityFailures: failures.filter(f => f.severity === 'high').length,
+      },
+    };
+
+    return output;
+  }
+
+  private async performIntegrationTesting(
+    scrumMasterOutput: any,
+    input: TesterInput
+  ): Promise<TesterOutput> {
+    await this.log('통합 테스트 시작');
+
+    await this.updateProgress(input.projectId, {
+      currentPhase: 'testing' as const,
+      testType: 'integration' as const,
+      testResult: 'pass' as const,
+      failures: [],
+      testCoverage: { ui: 0, api: 0, database: 0 },
+    });
+
+    const failures: TestFailure[] = [];
+    const successes: string[] = [];
+
+    // Epic & Story 데이터 로드
+    const epicStoryData = await this.getEpicStoryData(input.projectId);
+
+    await this.log('통합 테스트', {
+      epicCount: epicStoryData.epics.length,
+      storyCount: epicStoryData.stories.length,
+    });
+
+    // 통합 테스트 수행 (LLM 기반)
+    const prompt = this.buildIntegrationTestPrompt(epicStoryData);
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 8192,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
+
+      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const testResults = this.parseIntegrationTestResponse(text);
+
+      failures.push(...testResults.failures);
+      successes.push(...testResults.successes);
+
+      await this.log('통합 테스트 완료', {
+        failures: testResults.failures.length,
+        successes: testResults.successes.length,
+      });
+    } catch (error: any) {
+      await this.logError(error);
+      failures.push({
+        severity: 'high',
+        category: 'integration',
+        testType: 'manual',
+        scenario: '통합 테스트 실행',
+        expectedBehavior: '통합 테스트 성공',
+        actualBehavior: '테스트 실행 실패',
+        steps: ['통합 테스트를 시도함'],
+        evidence: error.message,
+      });
+    }
+
+    // 테스트 커버리지 계산
+    const totalTests = successes.length + failures.length;
+    const testCoverage = {
+      ui: totalTests > 0 ? (successes.filter(s => s.includes('[UI]')).length / Math.max(successes.filter(s => s.includes('[UI]')).length + failures.filter(f => f.category === 'ui').length, 1)) * 100 : 100,
+      api: totalTests > 0 ? (successes.filter(s => s.includes('[API]')).length / Math.max(successes.filter(s => s.includes('[API]')).length + failures.filter(f => f.category === 'api').length, 1)) * 100 : 100,
+      database: totalTests > 0 ? (successes.filter(s => s.includes('[DATABASE]')).length / Math.max(successes.filter(s => s.includes('[DATABASE]')).length + failures.filter(f => f.category === 'database').length, 1)) * 100 : 100,
+    };
+
+    // 전체 점수 계산
+    const overallScore = this.calculateOverallScore(failures, totalTests, testCoverage);
+
+    // Pass/Fail 결정 (85점 이상이고 high severity failure가 없어야 함 - 통합 테스트이므로 가장 엄격)
+    const hasHighSeverity = failures.some(f => f.severity === 'high');
+    const testResult: 'pass' | 'fail' = overallScore >= 85 && !hasHighSeverity ? 'pass' : 'fail';
+
+    const output: TesterOutput = {
+      currentPhase: 'completed',
+      testType: 'integration',
+      testResult,
+      overallScore,
+      failures,
+      successes,
+      testCoverage,
+      summary: {
+        totalTests,
+        passedTests: successes.length,
+        failedTests: failures.length,
+        highSeverityFailures: failures.filter(f => f.severity === 'high').length,
+      },
+    };
+
+    return output;
+  }
+
+  private async getEpicStoryData(projectId: string) {
+    const epicStoryExecution = await prisma.agentExecution.findFirst({
+      where: {
+        projectId,
+        agentId: 'epic-story',
+        status: 'COMPLETED',
+      },
+      orderBy: {
+        startedAt: 'desc',
+      },
+    });
+
+    if (!epicStoryExecution || !epicStoryExecution.output) {
+      throw new Error('Epic & Story 데이터를 찾을 수 없습니다');
+    }
+
+    const output = epicStoryExecution.output as any;
+    return {
+      epics: output.epics || [],
+      stories: output.stories || [],
+    };
+  }
+
+  private buildEpicTestPrompt(epic: any, stories: any[], epicStoryData: any): string {
+    const epicInfo = `## Epic 정보\n\n**제목**: ${epic.title}\n**설명**: ${epic.description}\n**우선순위**: ${epic.priority}\n\n`;
+    const storiesInfo = stories.map((s, i) => `### Story ${i + 1}: ${s.title}\n${s.markdown.substring(0, 500)}...`).join('\n\n');
+
+    return `# Epic 단위 테스트 요청
+
+당신은 QA 엔지니어입니다. 완성된 Epic의 모든 Story가 통합적으로 동작하는지 테스트하세요.
+
+${epicInfo}
+
+## Epic에 속한 Stories
+
+${storiesInfo}
+
+## Epic 테스트 항목
+
+### 1. Story 간 통합
+- Story 간 데이터 흐름이 올바른가?
+- Story 간 상태 공유가 동작하는가?
+- Story 순서가 논리적인가?
+
+### 2. Epic 레벨 기능
+- Epic의 목적이 달성되는가?
+- Epic의 모든 인수 조건이 충족되는가?
+- Epic 단위의 사용자 시나리오가 동작하는가?
+
+### 3. UI/UX 일관성
+- Epic 내 모든 Story의 UI가 일관된가?
+- 사용자 경험이 자연스러운가?
+- 반응형이 Epic 전체에서 동작하는가?
+
+### 4. 데이터 무결성
+- Epic 내 데이터 일관성이 유지되는가?
+- 트랜잭션 처리가 올바른가?
+- 에러 처리가 Epic 레벨에서 동작하는가?
+
+## 출력 형식
+
+\`\`\`markdown
+## Epic 테스트 결과
+
+### 성공한 테스트
+
+- **[카테고리]** [테스트 이름]: (설명)
+
+### 실패한 테스트
+
+#### [Severity] - [Category]
+
+**테스트 유형**: manual 또는 automated
+**시나리오**: (테스트 시나리오)
+**예상 동작**: (예상 결과)
+**실제 동작**: (실제 결과)
+**재현 단계**:
+1. (단계 1)
+2. (단계 2)
+3. (단계 3)
+**증거**: (스크린샷 또는 로그)
+
+Severity: HIGH, MEDIUM, LOW
+Category: ui, api, database, integration, edge-case
+\`\`\`
+
+중요: Epic 단위에서 발생하는 통합 문제, 일관성 문제, 데이터 흐름 문제 등을 중점적으로 테스트하세요.
+`;
+  }
+
+  private buildIntegrationTestPrompt(epicStoryData: any): string {
+    const epicSummary = epicStoryData.epics.map((e: any, i: number) =>
+      `### Epic ${i + 1}: ${e.title}\n${e.description}`
+    ).join('\n\n');
+
+    return `# 통합 테스트 요청
+
+당신은 QA 엔지니어입니다. 프로젝트 전체의 Epic들이 통합적으로 동작하는지 테스트하세요.
+
+## Epic 목록
+
+${epicSummary}
+
+## 통합 테스트 항목
+
+### 1. Epic 간 통합
+- Epic 간 데이터 흐름이 올바른가?
+- Epic 간 의존관계가 해결되는가?
+- Epic 간 API 통신이 동작하는가?
+
+### 2. 시스템 레벨 기능
+- 전체 사용자 시나리오가 완료되는가?
+- 시스템 전체 성능은 적절한가?
+- 전체 보안이 유지되는가?
+
+### 3. 데이터 무결성
+- 전체 시스템 데이터 일관성이 유지되는가?
+- Epic 간 데이터 동기화가 동작하는가?
+- 전체 트랜잭션이 올바른가?
+
+### 4. 사용자 경험
+- 전체 사용자 플로우가 자연스러운가?
+- Epic 간 전환이 매끄러운가?
+- 전체 UI/UX가 일관된가?
+
+## 출력 형식
+
+\`\`\`markdown
+## 통합 테스트 결과
+
+### 성공한 테스트
+
+- **[카테고리]** [테스트 이름]: (설명)
+
+### 실패한 테스트
+
+#### [Severity] - [Category]
+
+**테스트 유형**: manual 또는 automated
+**시나리오**: (테스트 시나리오)
+**예상 동작**: (예상 결과)
+**실제 동작**: (실제 결과)
+**재현 단계**:
+1. (단계 1)
+2. (단계 2)
+3. (단계 3)
+**증거**: (스크린샷 또는 로그)
+
+Severity: HIGH, MEDIUM, LOW
+Category: ui, api, database, integration, edge-case
+\`\`\`
+
+중요: Epic 간 통합 문제, 시스템 레벨 문제, 전체 사용자 플로우 문제 등을 중점적으로 테스트하세요.
+`;
+  }
+
+  private parseEpicTestResponse(text: string): { failures: TestFailure[], successes: string[] } {
+    const failures: TestFailure[] = [];
+    const successes: string[] = [];
+
+    try {
+      // 성공한 테스트 추출
+      const successMatch = text.match(/### 성공한 테스트[\s\S]*?(?=### 실패한 테스트|$)/);
+      if (successMatch) {
+        const successItems = successMatch[0].match(/-\s*\*\*\[([^\]]+)\]\*\*\s*([^\*]+):\s*([^\n]+)/g);
+        if (successItems) {
+          successItems.forEach(item => {
+            const categoryMatch = item.match(/\[([^\]]+)\]/);
+            const nameMatch = item.match(/\*\*([^:]+)\**:/);
+            if (categoryMatch && nameMatch) {
+              successes.push(`[${categoryMatch[1]}] ${nameMatch[1]}: ${item.substring(item.indexOf(':') + 1).trim()}`);
+            }
+          });
+        }
+      }
+
+      // 실패한 테스트 추출
+      const failureBlocks = text.match(/####\s*\[(HIGH|MEDIUM|LOW)\]\s*-\s*\w+[\s\S]*?(?=####|$)/g);
+      if (failureBlocks) {
+        for (const block of failureBlocks) {
+          const severityMatch = block.match(/\[(HIGH|MEDIUM|LOW)\]/i);
+          const scenarioMatch = block.match(/\*\*시나리오\*\*:\s*([^\n]+)/);
+          const expectedMatch = block.match(/\*\*예상 동작\*\*:\s*([^\n]+)/);
+          const actualMatch = block.match(/\*\*실제 동작\*\*:\s*([^\n]+)/);
+          const evidenceMatch = block.match(/\*\*증거\*\*:\s*([^\n]+)/);
+          const categoryMatch = block.match(/\*\*카테고리\*\*:\s*([^\n]+)/);
+
+          const stepsMatch = block.match(/\*\*재현 단계\*\*:[\s\S]*?(?=\*\*|$)/);
+          let steps: string[] = [];
+          if (stepsMatch) {
+            const stepItems = stepsMatch[0].match(/\d+\.\s*(.+)/g);
+            if (stepItems) {
+              steps = stepItems.map(s => s.replace(/^\d+\.\s*/, ''));
+            }
+          }
+
+          if (severityMatch && scenarioMatch && expectedMatch && actualMatch) {
+            failures.push({
+              severity: severityMatch[1].toLowerCase() as 'high' | 'medium' | 'low',
+              category: (categoryMatch ? categoryMatch[1].trim().toLowerCase() : 'integration') as any,
+              testType: 'manual',
+              scenario: scenarioMatch[1].trim(),
+              expectedBehavior: expectedMatch[1].trim(),
+              actualBehavior: actualMatch[1].trim(),
+              steps,
+              evidence: evidenceMatch ? evidenceMatch[1].trim() : undefined,
+            });
+          }
+        }
+      }
+    } catch (error: any) {
+      console.error('[Tester] Failed to parse epic test response:', error);
+    }
+
+    return { failures, successes };
+  }
+
+  private parseIntegrationTestResponse(text: string): { failures: TestFailure[], successes: string[] } {
+    // Epic 테스트 파싱과 동일한 로직
+    return this.parseEpicTestResponse(text);
   }
 
   private isRetryable(error: any): boolean {

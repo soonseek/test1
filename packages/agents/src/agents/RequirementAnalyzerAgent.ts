@@ -2,6 +2,8 @@ import { Agent, AgentExecutionResult, AgentStatus, CompletionMode } from '@magic
 import { WizardLevel } from '@magic-wand/shared';
 import { prisma } from '@magic-wand/db';
 import Anthropic from '@anthropic-ai/sdk';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 interface RequirementAnalyzerInput {
   projectId: string;
@@ -103,6 +105,9 @@ export class RequirementAnalyzerAgent extends Agent {
 
       // 4. Update deployment record (NOT create agent execution - orchestrator handles that)
       await this.updateDeploymentRecord(input.projectId, output);
+
+      // 5. PRD 파일 저장
+      await this.savePRDToFileSystem(input.projectId, output);
 
       await this.log('요구사항 분석 완료', {
         complexityScore: summary.complexityScore,
@@ -215,7 +220,7 @@ export class RequirementAnalyzerAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-opus-4-5-20251101',
         max_tokens: 8192,
         temperature: 0.3, // Lower temperature for more structured output
         messages: [
@@ -246,7 +251,7 @@ export class RequirementAnalyzerAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-opus-4-5-20251101',
         max_tokens: 8192,
         temperature: 0.3,
         messages: [
@@ -793,6 +798,69 @@ ${analysis.riskAssessment?.map((risk: any) =>
         } as any,
       },
     });
+  }
+
+  private async savePRDToFileSystem(projectId: string, output: RequirementAnalyzerOutput): Promise<void> {
+    try {
+      const projectDir = path.join(process.cwd(), 'projects', projectId);
+      const docsDir = path.join(projectDir, 'docs');
+
+      // 디렉토리 생성
+      await fs.mkdir(docsDir, { recursive: true });
+
+      // 각 PRD 옵션을 개별 파일로 저장
+      for (const prd of output.prdOptions) {
+        const prdFileName = `PRD-${prd.id}.md`;
+        const prdContent = this.generatePRDMarkdown(prd);
+
+        await fs.writeFile(
+          path.join(docsDir, prdFileName),
+          prdContent,
+          'utf-8'
+        );
+      }
+
+      // PRD 비교 파일 (모든 옵션을 한 파일에)
+      const comparisonContent = this.generatePRDComparisonMarkdown(output.prdOptions);
+      await fs.writeFile(
+        path.join(docsDir, 'PRD-Comparison.md'),
+        comparisonContent,
+        'utf-8'
+      );
+
+      await this.log('PRD 파일 저장 완료', {
+        projectDir,
+        prdCount: output.prdOptions.length,
+      });
+    } catch (error: any) {
+      await this.logError(error);
+      // 파일 저장 실패는 치명적이 아니므로 로그만 남기고 계속 진행
+      console.warn('[RequirementAnalyzer] Failed to save PRD files:', error.message);
+    }
+  }
+
+  private generatePRDMarkdown(prd: PRDOption): string {
+    let markdown = `# ${prd.name}\n\n`;
+    markdown += `${prd.description}\n\n`;
+    markdown += `## 요구사항 분석\n\n`;
+    markdown += `${prd.analysisMarkdown}\n\n`;
+
+    return markdown;
+  }
+
+  private generatePRDComparisonMarkdown(prdOptions: PRDOption[]): string {
+    let markdown = `# PRD 옵션 비교\n\n`;
+    markdown += `총 ${prdOptions.length}개의 PRD 옵션이 생성되었습니다.\n\n`;
+
+    prdOptions.forEach((prd, index) => {
+      markdown += `## ${index + 1}. ${prd.name}\n\n`;
+      markdown += `**ID**: ${prd.id}\n\n`;
+      markdown += `### 설명\n\n`;
+      markdown += `${prd.description}\n\n`;
+      markdown += `---\n\n`;
+    });
+
+    return markdown;
   }
 
   private isRetryable(error: any): boolean {

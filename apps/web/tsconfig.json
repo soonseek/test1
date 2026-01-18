@@ -5,6 +5,7 @@
     "rootDir": "./",
     "jsx": "preserve",
     "incremental": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "plugins": [
       {
         "name": "next"

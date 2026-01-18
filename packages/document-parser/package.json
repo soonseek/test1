@@ -12,7 +12,8 @@
   "dependencies": {
     "@magic-wand/shared": "workspace:*",
     "axios": "^1.6.5",
-    "@aws-sdk/client-s3": "^3.490.0"
+    "@aws-sdk/client-s3": "^3.490.0",
+    "form-data": "^4.0.0"
   },
   "devDependencies": {
     "typescript": "^5.3.3"

@@ -1,6 +1,6 @@
 # MAGIC WAND 🪄
 
-프리랜서 웹 개발자를 위한 MVP 자동 생성 플랫폼
+모두를 위한 MVP 자동 생성 플랫폼
 
 ## 📁 프로젝트 구조
 
@@ -36,7 +36,9 @@ cp .env.example .env
 pnpm install
 ```
 
-### 3. Docker로 데이터베이스 & Redis 시작
+### 3. 데이터베이스 & Redis 시작
+
+#### 옵션 A: Docker 사용 (권장)
 
 ```bash
 # Postgres와 Redis 컨테이너 시작
@@ -46,7 +48,19 @@ docker-compose up -d
 docker ps
 ```
 
-### 4. 데이터베이스 설정
+#### 옵션 B: 로컬 PostgreSQL 사용
+
+이미 로컬에 PostgreSQL이 설치되어 있는 경우:
+
+```bash
+# 데이터베이스 생성
+createdb magic_wand
+
+# .env 파일에 DATABASE_URL 설정
+# DATABASE_URL="postgresql://postgres:postgres@localhost:5432/magic_wand?schema=public"
+```
+
+### 4. Prisma 설정
 
 ```bash
 # Prisma Client 생성
@@ -54,7 +68,6 @@ cd packages/db
 pnpm prisma generate
 
 # 데이터베이스 스키마 푸시
-# (해당 위치에 .env 파일 만든 후 DATABASE_URL 입력)
 pnpm prisma db push
 ```
 
@@ -88,10 +101,43 @@ pnpm dev
 
 ### AI/Automation
 - Claude Code CLI
+- Anthropic Claude API
 - 업스테이지 API (문서 파싱)
 - GitHub API
-- Netlify API
+- Netlify API (Netlify DB 지원)
 - Slack API
+
+## 🚢 배포 가이드
+
+### Netlify 배포 시 DB 설정
+
+이 프로젝트는 **@netlify/neon** 패키지를 통해 Netlify DB를 자동으로 설정합니다.
+
+#### 배포 과정
+
+1. **배포 버튼 클릭**: Magic 페이지에서 "🚀 배포" 버튼 클릭
+2. **자동 DB 생성**: @netlify/neon 패키지가 Netlify DB (Neon Postgres) 자동 생성
+3. **환경변수 설정**: `DATABASE_URL` 환경변수가 자동으로 설정됨
+4. **빌드 및 배포**: Next.js 빌드 후 Netlify에 배포
+
+#### Netlify DB 특징
+
+- ✅ **7일 무료 체험**: 초기 7일간 무료로 사용 가능
+- ✅ **자동 프로비저닝**: `netlify build` 시 자동으로 DB 생성
+- ✅ **프로덕션 준비**: Neon 기반 서버리스 Postgres
+- ⚠️ **7일 후 Claim**: Netlify UI에서 Neon 계정으로 Claim 필요
+
+#### 자세한 내용
+
+- [Netlify DB 공식 문서](https://docs.netlify.com/build/data-and-storage/netlify-db/)
+- [Neon Console](https://console.neon.tech/): DB 관리 및 모니터링
+
+### 개발 환경 vs 프로덕션 환경
+
+| 환경 | DB 설정 | DATABASE_URL |
+|------|---------|--------------|
+| **개발 (Local)** | 로컬 PostgreSQL 또는 Docker | `postgresql://postgres:postgres@localhost:5432/magic_wand` |
+| **프로덕션 (Netlify)** | Netlify DB (Neon) 자동 생성 | 자동으로 설정됨 |
 
 ## 📖 문서
 

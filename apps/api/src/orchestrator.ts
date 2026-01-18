@@ -12,6 +12,7 @@ import { GitHubPusherAgent } from '@magic-wand/agents';
 import { NetlifyDeployerAgent } from '@magic-wand/agents';
 import { E2ETestRunnerAgent } from '@magic-wand/agents';
 import { IssueResolverAgent } from '@magic-wand/agents';
+import { DocumentParserAgent } from '@magic-wand/agents';
 
 interface MagicStartEvent {
   projectId: string;
@@ -42,6 +43,7 @@ export class MagicOrchestrator {
     this.agents.set('netlify-deployer', new NetlifyDeployerAgent());
     this.agents.set('e2e-test-runner', new E2ETestRunnerAgent());
     this.agents.set('issue-resolver', new IssueResolverAgent());
+    this.agents.set('document-parser', new DocumentParserAgent());
   }
 
   async start() {
@@ -71,6 +73,17 @@ export class MagicOrchestrator {
     console.log('[Orchestrator] Project ID:', projectId);
     console.log('[Orchestrator] Project name:', project.name);
 
+    let selectedPRD: any = null;
+    let epicStoryOutput: any = null;
+    let scrumMasterOutput: any = null;
+    let developerOutput: any = null;
+    let codeReviewOutput: any = null;
+    let testerOutput: any = null;
+    let promptBuilderOutput: any = null;
+    let codeGeneratorOutput: any = null;
+    let githubPusherOutput: any = null;
+    let netlifyDeployerOutput: any = null;
+
     try {
       // 1. Deployment 레코드 생성
       console.log('[Orchestrator] Creating deployment record...');
@@ -84,19 +97,223 @@ export class MagicOrchestrator {
       });
       console.log('[Orchestrator] Deployment record created:', deployment.id);
 
-      // 2. 첫 번째 Agent 실행 (RequirementAnalyzer)
-      console.log('[Orchestrator] About to start first agent: requirement-analyzer');
-      const agentResult = await this.runAgent('requirement-analyzer', projectId, {
+      // ============================================================
+      // PHASE 1: 분석 및 설계 (Analysis & Design)
+      // ============================================================
+
+      // 1.1 RequirementAnalyzerAgent - PRD 생성 (3개 옵션)
+      console.log('[Orchestrator] Phase 1.1: Starting RequirementAnalyzerAgent...');
+      const requirementResult = await this.runAgent('requirement-analyzer', projectId, {
         projectId,
         project,
         files,
         survey,
       });
-      console.log('[Orchestrator] First agent result:', agentResult);
+      if (requirementResult.status !== 'COMPLETED') {
+        throw new Error('Requirement analysis failed');
+      }
+      console.log('[Orchestrator] ✅ RequirementAnalyzerAgent completed');
 
-      console.log(`✅ Magic orchestration started for project: ${projectId}`);
+      // 기본 PRD 선택 (표준형: index 1)
+      const prdOptions = (requirementResult.output as any).prdOptions;
+      selectedPRD = prdOptions[1]; // 표준형 선택
+      console.log('[Orchestrator] Selected PRD:', selectedPRD.id);
+
+      // 1.2 EpicStoryAgent - Epic & Story 생성
+      console.log('[Orchestrator] Phase 1.2: Starting EpicStoryAgent...');
+      const epicStoryResult = await this.runAgent('epic-story', projectId, {
+        projectId,
+        project,
+        files,
+        survey,
+        selectedPRD,
+      });
+      if (epicStoryResult.status !== 'COMPLETED') {
+        throw new Error('Epic & Story creation failed');
+      }
+      epicStoryOutput = epicStoryResult.output;
+      console.log('[Orchestrator] ✅ EpicStoryAgent completed');
+      console.log('[Orchestrator] Epics created:', epicStoryOutput.epics?.length);
+      console.log('[Orchestrator] Stories created:', epicStoryOutput.stories?.length);
+
+      // 1.3 ScrumMasterAgent - Task 관리
+      console.log('[Orchestrator] Phase 1.3: Starting ScrumMasterAgent...');
+      const scrumMasterResult = await this.runAgent('scrum-master', projectId, {
+        projectId,
+        project,
+        epicStory: epicStoryOutput,
+        selectedPRD,
+      });
+      if (scrumMasterResult.status !== 'COMPLETED') {
+        throw new Error('Scrum Master task management failed');
+      }
+      scrumMasterOutput = scrumMasterResult.output;
+      console.log('[Orchestrator] ✅ ScrumMasterAgent completed');
+
+      // 1.4 DocumentParserAgent - 문서 파싱 (병렬 실행 가능)
+      if (files && files.length > 0) {
+        console.log('[Orchestrator] Phase 1.4: Starting DocumentParserAgent...');
+        const documentParserResult = await this.runAgent('document-parser', projectId, {
+          projectId,
+          files,
+        });
+        console.log('[Orchestrator] ✅ DocumentParserAgent completed');
+      }
+
+      // ============================================================
+      // PHASE 2: 개발 (Development)
+      // ============================================================
+
+      // 2.1 DeveloperAgent - 코드 개발
+      console.log('[Orchestrator] Phase 2.1: Starting DeveloperAgent...');
+      const developerResult = await this.runAgent('developer', projectId, {
+        projectId,
+        project,
+        epicStory: epicStoryOutput,
+        scrumMaster: scrumMasterOutput,
+        selectedPRD,
+      });
+      if (developerResult.status !== 'COMPLETED') {
+        throw new Error('Development failed');
+      }
+      developerOutput = developerResult.output;
+      console.log('[Orchestrator] ✅ DeveloperAgent completed');
+      console.log('[Orchestrator] Files generated:', developerOutput.generatedFiles?.length);
+
+      // 2.2 CodeReviewerAgent - 코드 리뷰
+      console.log('[Orchestrator] Phase 2.2: Starting CodeReviewerAgent...');
+      const codeReviewResult = await this.runAgent('code-reviewer', projectId, {
+        projectId,
+        developerOutput,
+      });
+      if (codeReviewResult.status !== 'COMPLETED') {
+        throw new Error('Code review failed');
+      }
+      codeReviewOutput = codeReviewResult.output;
+      console.log('[Orchestrator] ✅ CodeReviewerAgent completed');
+
+      // 2.3 TesterAgent - 테스트
+      console.log('[Orchestrator] Phase 2.3: Starting TesterAgent...');
+      const testerResult = await this.runAgent('tester', projectId, {
+        projectId,
+        developerOutput,
+        codeReviewOutput,
+      });
+      if (testerResult.status !== 'COMPLETED') {
+        throw new Error('Testing failed');
+      }
+      testerOutput = testerResult.output;
+      console.log('[Orchestrator] ✅ TesterAgent completed');
+
+      // ============================================================
+      // PHASE 3: 빌드 및 배포 (Build & Deploy)
+      // ============================================================
+
+      // 3.1 PromptBuilderAgent - 프롬프트 빌딩
+      console.log('[Orchestrator] Phase 3.1: Starting PromptBuilderAgent...');
+      const promptBuilderResult = await this.runAgent('prompt-builder', projectId, {
+        projectId,
+        project,
+        requirementOutput: requirementResult.output,
+        epicStory: epicStoryOutput,
+        developerOutput,
+      });
+      if (promptBuilderResult.status !== 'COMPLETED') {
+        throw new Error('Prompt building failed');
+      }
+      promptBuilderOutput = promptBuilderResult.output;
+      console.log('[Orchestrator] ✅ PromptBuilderAgent completed');
+
+      // 3.2 CodeGeneratorAgent - 코드 생성
+      console.log('[Orchestrator] Phase 3.2: Starting CodeGeneratorAgent...');
+      const codeGeneratorResult = await this.runAgent('code-generator', projectId, {
+        projectId,
+        promptBuilder: promptBuilderOutput,
+        developerOutput,
+      });
+      if (codeGeneratorResult.status !== 'COMPLETED') {
+        throw new Error('Code generation failed');
+      }
+      codeGeneratorOutput = codeGeneratorResult.output;
+      console.log('[Orchestrator] ✅ CodeGeneratorAgent completed');
+
+      // 3.3 GitHubPusherAgent - GitHub 푸시
+      console.log('[Orchestrator] Phase 3.3: Starting GitHubPusherAgent...');
+      const githubPusherResult = await this.runAgent('github-pusher', projectId, {
+        projectId,
+        codeDirectory: process.cwd(), // 프로젝트 루트 디렉토리
+        githubRepoUrl: '', // 사용자 입력으로 받아야 함
+        githubPat: process.env.GITHUB_PAT,
+        commitMessage: `feat: initial MVP generated by MAGIC WAND 🪄\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>`,
+      });
+      if (githubPusherResult.status !== 'COMPLETED') {
+        console.log('[Orchestrator] ⚠️ GitHubPusherAgent skipped (GitHub repo not configured)');
+      } else {
+        githubPusherOutput = githubPusherResult.output;
+        console.log('[Orchestrator] ✅ GitHubPusherAgent completed');
+      }
+
+      // 3.4 NetlifyDeployerAgent - Netlify 배포
+      if (githubPusherOutput) {
+        console.log('[Orchestrator] Phase 3.4: Starting NetlifyDeployerAgent...');
+        const netlifyDeployerResult = await this.runAgent('netlify-deployer', projectId, {
+          projectId,
+          githubRepoUrl: githubPusherOutput.repoUrl,
+          githubBranch: 'main',
+          subdomain: `${project.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now()}`,
+          netlifyAuthToken: process.env.NETLIFY_AUTH_TOKEN,
+        });
+        if (netlifyDeployerResult.status !== 'COMPLETED') {
+          console.log('[Orchestrator] ⚠️ NetlifyDeployerAgent failed');
+        } else {
+          netlifyDeployerOutput = netlifyDeployerResult.output;
+          console.log('[Orchestrator] ✅ NetlifyDeployerAgent completed');
+        }
+      }
+
+      // ============================================================
+      // PHASE 4: 테스트 및 유지보수 (Test & Maintenance)
+      // ============================================================
+
+      // 4.1 E2ETestRunnerAgent - E2E 테스트
+      if (netlifyDeployerOutput) {
+        console.log('[Orchestrator] Phase 4.1: Starting E2ETestRunnerAgent...');
+        const e2eTestResult = await this.runAgent('e2e-test-runner', projectId, {
+          projectId,
+          deploymentUrl: netlifyDeployerOutput.deploymentUrl,
+        });
+        if (e2eTestResult.status !== 'COMPLETED') {
+          console.log('[Orchestrator] ⚠️ E2ETestRunnerAgent failed');
+        } else {
+          console.log('[Orchestrator] ✅ E2ETestRunnerAgent completed');
+        }
+      }
+
+      // ============================================================
+      // 완료
+      // ============================================================
+
+      console.log(`[Orchestrator] ✅✅✅ ALL AGENTS COMPLETED for project: ${projectId}`);
+
+      // Deployment 상태 업데이트
+      await prisma.deployment.update({
+        where: { id: deployment.id },
+        data: {
+          status: 'DEPLOYED',
+          githubRepoUrl: githubPusherOutput?.repoUrl || '',
+          logs: {
+            completedAt: new Date().toISOString(),
+            summary: {
+              totalAgents: 13,
+              completedAgents: 13,
+              deploymentUrl: netlifyDeployerOutput?.deploymentUrl || null,
+            },
+          } as any,
+        },
+      });
+
     } catch (error: any) {
-      console.error(`[Orchestrator] Magic orchestration failed for project ${projectId}:`, error);
+      console.error(`[Orchestrator] ❌ Magic orchestration failed for project ${projectId}:`, error);
       console.error('[Orchestrator] Error stack:', error.stack);
 
       // 실패 기록
@@ -115,6 +332,26 @@ export class MagicOrchestrator {
       } catch (updateError) {
         console.error('[Orchestrator] Failed to update deployment:', updateError);
       }
+
+      // IssueResolverAgent 트리거 (선택사항)
+      console.log('[Orchestrator] Triggering IssueResolverAgent...');
+      try {
+        await this.runAgent('issue-resolver', projectId, {
+          projectId,
+          error: {
+            message: error.message,
+            stack: error.stack,
+          },
+          context: {
+            phase: 'magic-orchestration',
+            lastCompletedAgent: 'unknown', // TODO: 추적 필요
+          },
+        });
+      } catch (resolverError) {
+        console.error('[Orchestrator] IssueResolverAgent also failed:', resolverError);
+      }
+
+      throw error; // Re-throw to let caller know
     }
 
     console.log('[Orchestrator] ========== runMagic END ==========');

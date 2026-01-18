@@ -1,7 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@magic-wand/shared'],
+  transpilePackages: [],
+  experimental: {
+    optimizePackageImports: ['react-markdown'],
+  },
 };
 
 module.exports = nextConfig;

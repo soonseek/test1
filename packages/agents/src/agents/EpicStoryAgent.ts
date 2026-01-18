@@ -1,6 +1,8 @@
 import { Agent, AgentExecutionResult, AgentStatus, CompletionMode } from '@magic-wand/agent-framework';
 import { prisma } from '@magic-wand/db';
 import { Anthropic } from '@anthropic-ai/sdk';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 interface EpicStoryInput {
   projectId: string;
@@ -226,7 +228,7 @@ export class EpicStoryAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 8192,
         temperature: 0.3,
         messages: [
@@ -295,7 +297,7 @@ export class EpicStoryAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 16384,
         temperature: 0.3,
         messages: [
@@ -635,7 +637,7 @@ ${epicData.description}
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 4096,
         temperature: 0.3,
         messages: [
@@ -712,10 +714,90 @@ ${story.acceptanceCriteria.map((criteria: string, i: number) => `${i + 1}. [ ] $
           storyFiles: output.stories as any,
         },
       });
+
+      // 파일 시스템에도 저장
+      await this.saveToFileSystem(projectId, output);
     } catch (error: any) {
       await this.logError(error);
       throw new Error(`DB 저장 실패: ${error.message}`);
     }
+  }
+
+  private async saveToFileSystem(projectId: string, output: EpicStoryOutput): Promise<void> {
+    try {
+      const projectDir = path.join(process.cwd(), 'projects', projectId);
+      const docsDir = path.join(projectDir, 'docs');
+
+      // 디렉토리 생성
+      await fs.mkdir(docsDir, { recursive: true });
+
+      // Epic.md 저장
+      const epicMarkdown = this.generateEpicListMarkdown(output.epics);
+      await fs.writeFile(
+        path.join(docsDir, 'Epic.md'),
+        epicMarkdown,
+        'utf-8'
+      );
+
+      // 각 Story를 개별 파일로 저장
+      for (const story of output.stories) {
+        const storyFileName = story.fileName || `${story.id}.md`;
+        await fs.writeFile(
+          path.join(docsDir, storyFileName),
+          story.markdown,
+          'utf-8'
+        );
+      }
+
+      // README.md 생성
+      const readmeMarkdown = this.generateReadmeMarkdown(projectId, output);
+      await fs.writeFile(
+        path.join(projectDir, 'README.md'),
+        readmeMarkdown,
+        'utf-8'
+      );
+
+      await this.log('파일 시스템 저장 완료', {
+        projectDir,
+        filesCount: output.stories.length + 2, // Epic.md + README.md + Story files
+      });
+    } catch (error: any) {
+      await this.logError(error);
+      throw new Error(`파일 시스템 저장 실패: ${error.message}`);
+    }
+  }
+
+  private generateEpicListMarkdown(epics: any[]): string {
+    let markdown = `# Epic 목록\n\n`;
+
+    epics.forEach((epic, index) => {
+      markdown += `## ${index + 1}. ${epic.title}\n\n`;
+      markdown += `**Priority**: ${epic.priority}\n`;
+      markdown += `**Order**: ${epic.order}\n\n`;
+      markdown += `${epic.description}\n\n`;
+      markdown += `### 상세\n\n`;
+      markdown += `${epic.markdown}\n\n`;
+      markdown += `---\n\n`;
+    });
+
+    return markdown;
+  }
+
+  private generateReadmeMarkdown(projectId: string, output: EpicStoryOutput): string {
+    const totalPoints = output.stories.reduce((sum, s) => sum + s.storyPoints, 0);
+
+    let markdown = `# ${projectId} 프로젝트\n\n`;
+    markdown += `## 프로젝트 개요\n\n`;
+    markdown += `이 프로젝트는 MAGIC WAND 플랫폼을 통해 생성되었습니다.\n\n`;
+    markdown += `## 요약\n\n`;
+    markdown += `- **총 Epic**: ${output.summary.totalEpics}개\n`;
+    markdown += `- **총 Story**: ${output.summary.totalStories}개\n`;
+    markdown += `- **총 Story Points**: ${totalPoints}pts\n\n`;
+    markdown += `## 문서 구조\n\n`;
+    markdown += `- 'docs/Epic.md' - Epic 목록\n`;
+    markdown += `- 'docs/story-*.md' - Story 상세\n\n`;
+
+    return markdown;
   }
 
   private async updateProgress(projectId: string, progress: Partial<EpicStoryOutput>): Promise<void> {

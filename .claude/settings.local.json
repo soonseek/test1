@@ -28,7 +28,21 @@
       "Bash(cmd:*)",
       "Bash(timeout:*)",
       "WebSearch",
-      "Bash(pnpm --filter @magic-wand/agents build:*)"
+      "Bash(pnpm --filter @magic-wand/agents build:*)",
+      "Bash(wc:*)",
+      "Bash(NODE_OPTIONS='--max-old-space-size=4096' next build:*)",
+      "Bash(NODE_OPTIONS='--max-old-space-size=4096' npx next build:*)",
+      "Bash(if exist:*)",
+      "Bash(if:*)",
+      "Bash(then mkdir projects)",
+      "Bash(else echo \"projects directory exists\")",
+      "Bash(fi:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill:*)",
+      "Bash(dir:*)",
+      "Bash(if not exist \"_bmad-output\\planning-artifacts\" mkdir \"_bmad-output\\planning-artifacts\")",
+      "Bash(mkdir:*)",
+      "Bash(find:*)"
     ]
   }
 }

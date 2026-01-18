@@ -25,7 +25,7 @@ interface Task {
 }
 
 interface ScrumMasterOutput {
-  currentPhase: 'task-creation' | 'review-analysis' | 'test-analysis' | 'completed';
+  currentPhase: 'task-creation' | 'review-analysis' | 'test-analysis' | 'epic-testing' | 'integration-testing' | 'completed';
   currentEpic?: {
     order: number;
     title: string;
@@ -46,6 +46,15 @@ interface ScrumMasterOutput {
   };
   reviewFailures?: any[]; // From code reviewer
   testFailures?: any[]; // From tester
+  epicTestResult?: {
+    epicOrder: number;
+    result: 'pass' | 'fail';
+    testDate: string;
+  };
+  integrationTestResult?: {
+    result: 'pass' | 'fail';
+    testDate: string;
+  };
 }
 
 export class ScrumMasterAgent extends Agent {
@@ -81,20 +90,24 @@ export class ScrumMasterAgent extends Agent {
     });
 
     try {
-      // 1. PRD, Epic, Story 로드
+      // 1. PRD 로드
       const selectedPRD = await this.getSelectedPRD(input.projectId);
       if (!selectedPRD) {
-        throw new Error('선택된 PRD를 찾을 수 없습니다');
+        throw new Error('선택된 PRD를 찾을 수 없습니다. 먼저 요구사항 분석을 완료하고 PRD를 선택해주세요.');
       }
 
+      // 2. Epic, Story 로드
       const epicStoryData = await this.getEpicStoryData(input.projectId);
+      if (!epicStoryData || epicStoryData.epics.length === 0) {
+        throw new Error('Epic & Story 데이터를 찾을 수 없습니다. 먼저 Epic & Story 생성을 완료해주세요.');
+      }
 
       await this.log('Epic & Story 데이터 로드 완료', {
         totalEpics: epicStoryData.epics.length,
         totalStories: epicStoryData.stories.length,
       });
 
-      // 2. 이전 진행 상황 확인
+      // 3. 이전 진행 상황 확인
       const previousExecution = await this.getPreviousExecution(input.projectId);
       const currentPhase = this.determinePhase(previousExecution, epicStoryData);
 
@@ -105,19 +118,28 @@ export class ScrumMasterAgent extends Agent {
 
       let output: ScrumMasterOutput;
 
-      // 3. Phase별 작업 수행
+      // 4. Phase별 작업 수행
       if (currentPhase === 'task-creation') {
         output = await this.generateTaskList(epicStoryData, selectedPRD, input);
       } else if (currentPhase === 'review-analysis') {
         output = await this.analyzeReviewFailures(epicStoryData, previousExecution, input);
       } else if (currentPhase === 'test-analysis') {
         output = await this.analyzeTestFailures(epicStoryData, previousExecution, input);
+      } else if (currentPhase === 'epic-testing') {
+        output = await this.handleEpicTesting(epicStoryData, previousExecution, input);
+      } else if (currentPhase === 'integration-testing') {
+        output = await this.handleIntegrationTesting(epicStoryData, previousExecution, input);
       } else {
         // All completed - move to next story or epic
         output = await this.moveToNextStory(epicStoryData, previousExecution, input);
       }
 
-      // 4. DB 저장
+      // 5. output null 체크
+      if (!output) {
+        throw new Error('Scrum Master output 생성 실패');
+      }
+
+      // 6. DB 저장
       await this.saveToDatabase(input.projectId, output);
 
       await this.log('Scrum Master 작업 완료', {
@@ -162,28 +184,27 @@ export class ScrumMasterAgent extends Agent {
   }
 
   private async getEpicStoryData(projectId: string) {
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: {
-        epicMarkdown: true,
-        storyFiles: true,
+    // Epic & Story agent 실행 결과에서 읽기
+    const epicStoryExecution = await prisma.agentExecution.findFirst({
+      where: {
+        projectId,
+        agentId: 'epic-story',
+        status: 'COMPLETED',
+      },
+      orderBy: {
+        startedAt: 'desc',
       },
     });
 
-    if (!project) {
-      throw new Error('프로젝트를 찾을 수 없습니다');
+    if (!epicStoryExecution || !epicStoryExecution.output) {
+      throw new Error('Epic & Story 데이터를 찾을 수 없습니다. 먼저 Epic & Story를 완료해주세요.');
     }
 
-    let epics: any[] = [];
-    let stories: any[] = [];
-
-    if (project.epicMarkdown) {
-      const epicData = JSON.parse(project.epicMarkdown);
-      epics = epicData.epics || [];
-      stories = epicData.stories || [];
-    }
-
-    return { epics, stories };
+    const output = epicStoryExecution.output as any;
+    return {
+      epics: output.epics || [],
+      stories: output.stories || [],
+    };
   }
 
   private async getPreviousExecution(projectId: string) {
@@ -199,7 +220,7 @@ export class ScrumMasterAgent extends Agent {
     });
   }
 
-  private determinePhase(previousExecutions: any[], epicStoryData: any): 'task-creation' | 'review-analysis' | 'test-analysis' | 'completed' {
+  private determinePhase(previousExecutions: any[], epicStoryData: any): 'task-creation' | 'review-analysis' | 'test-analysis' | 'epic-testing' | 'integration-testing' | 'completed' {
     if (!previousExecutions || previousExecutions.length === 0) {
       return 'task-creation';
     }
@@ -207,14 +228,38 @@ export class ScrumMasterAgent extends Agent {
     // 가장 최근 실행 확인
     const latest = previousExecutions[0];
 
+    // latest null 체크
+    if (!latest) {
+      return 'task-creation';
+    }
+
+    // Epic 테스트 실패 처리
+    if (latest.agentId === 'tester' && latest.status === 'COMPLETED') {
+      const output = latest.output as any;
+      if (output && output.testType === 'epic' && output.testResult === 'fail') {
+        return 'epic-testing';
+      }
+    }
+
+    // 통합 테스트 실패 처리
+    if (latest.agentId === 'tester' && latest.status === 'COMPLETED') {
+      const output = latest.output as any;
+      if (output && output.testType === 'integration' && output.testResult === 'fail') {
+        return 'integration-testing';
+      }
+    }
+
     // Code Reviewer가 실패한 경우
     if (latest.agentId === 'code-reviewer' && latest.status === 'FAILED') {
       return 'review-analysis';
     }
 
-    // Tester가 실패한 경우
+    // Story Tester가 실패한 경우
     if (latest.agentId === 'tester' && latest.status === 'FAILED') {
-      return 'test-analysis';
+      const output = latest.output as any;
+      if (output && output.testType !== 'epic' && output.testType !== 'integration') {
+        return 'test-analysis';
+      }
     }
 
     // Developer가 완료되면 다음 task 생성 필요
@@ -224,15 +269,106 @@ export class ScrumMasterAgent extends Agent {
       return 'task-creation';
     }
 
+    // Story Tester가 완료되면 Epic 완료 여부 확인
+    if (latest.agentId === 'tester' && latest.status === 'COMPLETED') {
+      const output = latest.output as any;
+      if (output && output.testType === 'story' && output.testResult === 'pass') {
+        // Epic 완료 여부 확인
+        const currentEpicStatus = this.checkEpicCompletion(previousExecutions, epicStoryData);
+        if (currentEpicStatus.isEpicComplete && !currentEpicStatus.allEpicsComplete) {
+          return 'epic-testing';
+        }
+        if (currentEpicStatus.allEpicsComplete) {
+          return 'integration-testing';
+        }
+      }
+    }
+
     // Scrum Master 자신이 이전에 실행된 경우
     if (latest.agentId === 'scrum-master') {
       const output = latest.output as any;
-      if (output.currentPhase === 'completed') {
+      if (output && output.currentPhase === 'completed') {
         return 'task-creation'; // Move to next story
       }
     }
 
     return 'task-creation';
+  }
+
+  private checkEpicCompletion(previousExecutions: any[], epicStoryData: any): { isEpicComplete: boolean; allEpicsComplete: boolean; completedEpicOrder?: number } {
+    // 가장 최근 Scrum Master 실행에서 현재 Epic/Story 정보 확인
+    const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
+    if (!scrumMasterExec || !scrumMasterExec.output) {
+      return { isEpicComplete: false, allEpicsComplete: false };
+    }
+
+    const currentEpic = scrumMasterExec.output.currentEpic;
+    const currentStory = scrumMasterExec.output.currentStory;
+    if (!currentEpic || !currentStory) {
+      return { isEpicComplete: false, allEpicsComplete: false };
+    }
+
+    // 해당 Epic의 모든 Story가 완료되었는지 확인
+    const epicOrder = currentEpic.order;
+    const storiesInEpic = epicStoryData.stories.filter((s: any) => {
+      const storyEpicOrder = this.getStoryEpicOrder(s, epicStoryData);
+      return storyEpicOrder === epicOrder;
+    });
+
+    // 해당 Epic의 모든 Story가 테스트 통과했는지 확인
+    let completedStoryCount = 0;
+    for (const story of storiesInEpic) {
+      const storyKey = `${epicOrder}-${this.getStoryOrderInEpic(story, epicStoryData)}`;
+      const storyCompleted = this.isStoryCompleted(previousExecutions, storyKey);
+      if (storyCompleted) {
+        completedStoryCount++;
+      }
+    }
+
+    const isEpicComplete = completedStoryCount === storiesInEpic.length && storiesInEpic.length > 0;
+    const allEpicsComplete = isEpicComplete && epicOrder === epicStoryData.epics.length;
+
+    return {
+      isEpicComplete,
+      allEpicsComplete,
+      completedEpicOrder: epicOrder,
+    };
+  }
+
+  private getStoryEpicOrder(story: any, epicStoryData: any): number {
+    // story.epicId로 epic의 order 찾기
+    const epic = epicStoryData.epics.find((e: any) => e.id === story.epicId);
+    return epic ? epicStoryData.epics.indexOf(epic) + 1 : 0;
+  }
+
+  private getStoryOrderInEpic(story: any, epicStoryData: any): number {
+    // Epic 내에서의 Story 순서 찾기
+    const epicStories = epicStoryData.stories.filter((s: any) => s.epicId === story.epicId);
+    return epicStories.indexOf(story) + 1;
+  }
+
+  private isStoryCompleted(previousExecutions: any[], storyKey: string): boolean {
+    // 해당 Story의 테스트가 Pass인지 확인
+    const testerExecs = previousExecutions.filter(e => e.agentId === 'tester' && e.status === 'COMPLETED');
+    for (const exec of testerExecs) {
+      const output = exec.output as any;
+      if (output && output.testType === 'story' && output.testResult === 'pass') {
+        const scrumMasterExec = previousExecutions.find(e =>
+          e.agentId === 'scrum-master' &&
+          e.startedAt < exec.startedAt
+        );
+        if (scrumMasterExec && scrumMasterExec.output) {
+          const currentStory = scrumMasterExec.output.currentStory;
+          if (currentStory) {
+            const execStoryKey = `${currentStory.epicOrder}-${currentStory.storyOrder}`;
+            if (execStoryKey === storyKey) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
   }
 
   private async generateTaskList(
@@ -347,7 +483,7 @@ export class ScrumMasterAgent extends Agent {
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 8192,
         temperature: 0.3,
         messages: [
@@ -523,17 +659,21 @@ JSON 배열로 출력하세요:
 
     // 이전 task list 로드
     const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
-    const existingTasks = scrumMasterExec?.output?.tasks || [];
+    if (!scrumMasterExec || !scrumMasterExec.output) {
+      throw new Error('Scrum Master 실행 결과를 찾을 수 없습니다');
+    }
+
+    const existingTasks = scrumMasterExec.output.tasks || [];
 
     const output: ScrumMasterOutput = {
       currentPhase: 'review-analysis',
-      currentEpic: scrumMasterExec?.output?.currentEpic,
-      currentStory: scrumMasterExec?.output?.currentStory,
+      currentEpic: scrumMasterExec.output.currentEpic,
+      currentStory: scrumMasterExec.output.currentStory,
       tasks: [...existingTasks, ...additionalTasks],
-      taskListMarkdown: this.generateUpdatedTaskListMarkdown(scrumMasterExec?.output?.taskListMarkdown, additionalTasks),
+      taskListMarkdown: this.generateUpdatedTaskListMarkdown(scrumMasterExec.output.taskListMarkdown, additionalTasks),
       summary: {
         totalTasks: existingTasks.length + additionalTasks.length,
-        completedTasks: scrumMasterExec?.output?.summary?.completedTasks || 0,
+        completedTasks: scrumMasterExec.output.summary?.completedTasks || 0,
         failedTasks: failures.length,
       },
       reviewFailures: failures,
@@ -577,17 +717,21 @@ JSON 배열로 출력하세요:
 
     // 이전 task list 로드
     const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
-    const existingTasks = scrumMasterExec?.output?.tasks || [];
+    if (!scrumMasterExec || !scrumMasterExec.output) {
+      throw new Error('Scrum Master 실행 결과를 찾을 수 없습니다');
+    }
+
+    const existingTasks = scrumMasterExec.output.tasks || [];
 
     const output: ScrumMasterOutput = {
       currentPhase: 'test-analysis',
-      currentEpic: scrumMasterExec?.output?.currentEpic,
-      currentStory: scrumMasterExec?.output?.currentStory,
+      currentEpic: scrumMasterExec.output.currentEpic,
+      currentStory: scrumMasterExec.output.currentStory,
       tasks: [...existingTasks, ...additionalTasks],
-      taskListMarkdown: this.generateUpdatedTaskListMarkdown(scrumMasterExec?.output?.taskListMarkdown, additionalTasks),
+      taskListMarkdown: this.generateUpdatedTaskListMarkdown(scrumMasterExec.output.taskListMarkdown, additionalTasks),
       summary: {
         totalTasks: existingTasks.length + additionalTasks.length,
-        completedTasks: scrumMasterExec?.output?.summary?.completedTasks || 0,
+        completedTasks: scrumMasterExec.output.summary?.completedTasks || 0,
         failedTasks: failures.length,
       },
       testFailures: failures,
@@ -606,7 +750,7 @@ JSON 배열로 출력하세요:
 
     try {
       const response = await this.anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 4096,
         temperature: 0.3,
         messages: [
@@ -746,6 +890,417 @@ JSON 배열로 출력하세요:
       await this.logError(error);
       throw new Error(`DB 저장 실패: ${error.message}`);
     }
+  }
+
+  private async handleEpicTesting(
+    epicStoryData: any,
+    previousExecutions: any[],
+    input: ScrumMasterInput
+  ): Promise<ScrumMasterOutput> {
+    await this.log('Epic 테스트 시작');
+
+    // Epic 테스트 결과 확인
+    const epicTesterExec = previousExecutions.find(e =>
+      e.agentId === 'tester' &&
+      e.status === 'COMPLETED' &&
+      e.output?.testType === 'epic'
+    );
+
+    if (!epicTesterExec || !epicTesterExec.output) {
+      // Epic 테스트가 아직 실행되지 않음 - 테스트를 요청하는 상태로 반환
+      const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
+      const currentEpic = scrumMasterExec?.output?.currentEpic;
+
+      return {
+        currentPhase: 'epic-testing',
+        currentEpic,
+        tasks: [],
+        taskListMarkdown: `# Epic 단위 테스트\n\nEpic ${currentEpic?.order}의 모든 Story가 완료되었습니다. Epic 단위 테스트를 진행합니다.`,
+        summary: {
+          totalTasks: 0,
+          completedTasks: 0,
+          failedTasks: 0,
+        },
+      } as ScrumMasterOutput;
+    }
+
+    const testResult = epicTesterExec.output;
+
+    // Epic 테스트 pass - 다음 Epic의 첫 Story로 이동
+    if (testResult.testResult === 'pass') {
+      await this.log('Epic 테스트 Pass - 다음 Epic으로 이동');
+
+      // 현재 Epic의 다음 Epic 찾기
+      const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
+      const currentEpicOrder = scrumMasterExec?.output?.currentEpic?.order || 0;
+      const nextEpicOrder = currentEpicOrder + 1;
+
+      if (nextEpicOrder > epicStoryData.epics.length) {
+        // 모든 Epic 완료 - 통합 테스트로
+        return {
+          currentPhase: 'integration-testing',
+          tasks: [],
+          taskListMarkdown: '# 통합 테스트\n\n모든 Epic이 완료되었습니다. 통합 테스트를 진행합니다.',
+          summary: {
+            totalTasks: 0,
+            completedTasks: 0,
+            failedTasks: 0,
+          },
+          epicTestResult: {
+            epicOrder: currentEpicOrder,
+            result: 'pass',
+            testDate: new Date().toISOString(),
+          },
+        } as ScrumMasterOutput;
+      }
+
+      // 다음 Epic의 첫 Story task list 생성
+      return await this.generateTaskList(epicStoryData, await this.getSelectedPRD(input.projectId), input);
+    }
+
+    // Epic 테스트 fail - 대응 task 생성
+    await this.log('Epic 테스트 Fail - 대응 Task 생성');
+
+    const additionalTasks = await this.generateEpicFailureTasks(testResult.failures, epicStoryData, previousExecutions, input);
+
+    await this.log('Epic 실패 대응 Task 생성 완료', {
+      additionalTaskCount: additionalTasks.length,
+    });
+
+    const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
+    const currentEpic = scrumMasterExec?.output?.currentEpic;
+
+    return {
+      currentPhase: 'epic-testing',
+      currentEpic,
+      tasks: additionalTasks,
+      taskListMarkdown: this.generateEpicFailureTaskListMarkdown(currentEpic, testResult.failures, additionalTasks),
+      summary: {
+        totalTasks: additionalTasks.length,
+        completedTasks: 0,
+        failedTasks: testResult.failures?.length || 0,
+      },
+      epicTestResult: {
+        epicOrder: currentEpic?.order || 0,
+        result: 'fail',
+        testDate: new Date().toISOString(),
+      },
+      testFailures: testResult.failures,
+    } as ScrumMasterOutput;
+  }
+
+  private async generateEpicFailureTasks(
+    failures: any[],
+    epicStoryData: any,
+    previousExecutions: any[],
+    input: ScrumMasterInput
+  ): Promise<Task[]> {
+    const prompt = this.buildEpicFailureAnalysisPrompt(failures);
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 4096,
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
+
+      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const taskList = this.parseTaskListResponse(text);
+
+      const scrumMasterExec = previousExecutions.find(e => e.agentId === 'scrum-master');
+      const currentEpic = scrumMasterExec?.output?.currentEpic;
+      const currentStory = scrumMasterExec?.output?.currentStory;
+
+      return taskList.map((taskData: any, index: number) => ({
+        id: `task-epic-${currentEpic?.order}-fix-${index + 1}`,
+        title: `🔧 Epic 수정: ${taskData.title}`,
+        description: taskData.description,
+        status: 'pending' as const,
+        assignedTo: 'developer' as const,
+        priority: 'high',
+        storyId: currentStory?.storyId || `epic-${currentEpic?.order}`,
+        epicOrder: currentEpic?.order || 0,
+        storyOrder: currentStory?.storyOrder || 0,
+        taskOrder: 1000 + index,
+      }));
+    } catch (error: any) {
+      await this.logError(error);
+      throw new Error(`Epic 실패 Task 생성 실패: ${error.message}`);
+    }
+  }
+
+  private buildEpicFailureAnalysisPrompt(failures: any[]): string {
+    const failuresText = JSON.stringify(failures, null, 2);
+
+    return `# Epic 테스트 실패 분석 및 대응 Task 생성
+
+당신은 BMad Method를 숙달한 Scrum Master입니다.
+Epic 단위 테스트에서 발생한 실패 사유를 분석하여 이를 해결하기 위한 Task를 생성해주세요.
+
+## Epic 테스트 실패 목록
+
+\`\`\`json
+${failuresText}
+\`\`\`
+
+## Task 생성 원칙
+
+1. **Epic 레벨 문제 해결**: Epic 전체에 영향을 미치는 문제 해결
+2. **여러 Story 관련**: 단일 Story가 아니라 Epic 전체 관점에서 접근
+3. **구체적 행동**: 개발자가 바로 구현할 수 있는 수준
+4. **높은 우선순위**: Epic 실패 수정은 항상 high priority
+5. **재검증 가능**: 수정 후 Epic 테스트 재검증 가능
+
+## 출력 형식
+
+JSON 배열로 출력하세요:
+
+\`\`\`json
+[
+  {
+    "title": "Epic 간 데이터 공유 메커니즘 구현",
+    "description": "Story 1-1, 1-2, 1-3 간의 데이터 공유를 위해 context API를 구현합니다. apps/web/src/context/EpicContext.tsx를 생성하고, 필요한 상태를 관리합니다.",
+    "priority": "high"
+  }
+]
+\`\`\`
+
+중요: 모든 Epic 테스트 실패 사유를 해결할 수 있는 Task를 생성하세요.
+`;
+  }
+
+  private generateEpicFailureTaskListMarkdown(epic: any, failures: any[], tasks: Task[]): string {
+    let markdown = `# Epic 테스트 실패 대응 Task List\n\n`;
+    markdown += `**Epic**: ${epic?.title || 'N/A'}\n`;
+    markdown += `**실패 사유**: ${failures?.length || 0}개\n`;
+    markdown += `**대응 Task**: ${tasks.length}개\n\n`;
+    markdown += `---\n\n`;
+
+    markdown += `## 실패 사요\n\n`;
+    failures.forEach((failure, index) => {
+      markdown += `### ${index + 1}. ${failure.scenario}\n\n`;
+      markdown += `- **Severity**: ${failure.severity}\n`;
+      markdown += `- **Category**: ${failure.category}\n\n`;
+      markdown += `**예상 동작**: ${failure.expectedBehavior}\n\n`;
+      markdown += `**실제 동작**: ${failure.actualBehavior}\n\n`;
+    });
+
+    markdown += `---\n\n`;
+    markdown += `## 대응 Tasks\n\n`;
+
+    tasks.forEach((task, index) => {
+      markdown += `### ${index + 1}. ${task.title}\n\n`;
+      markdown += `- **Task ID**: ${task.id}\n`;
+      markdown += `- **Priority**: ${task.priority}\n`;
+      markdown += `- **Status**: ${task.status}\n\n`;
+      markdown += `**설명**:\n${task.description}\n\n`;
+      markdown += `---\n\n`;
+    });
+
+    return markdown;
+  }
+
+  private async handleIntegrationTesting(
+    epicStoryData: any,
+    previousExecutions: any[],
+    input: ScrumMasterInput
+  ): Promise<ScrumMasterOutput> {
+    await this.log('통합 테스트 시작');
+
+    // 통합 테스트 결과 확인
+    const integrationTesterExec = previousExecutions.find(e =>
+      e.agentId === 'tester' &&
+      e.status === 'COMPLETED' &&
+      e.output?.testType === 'integration'
+    );
+
+    if (!integrationTesterExec || !integrationTesterExec.output) {
+      // 통합 테스트가 아직 실행되지 않음
+      return {
+        currentPhase: 'integration-testing',
+        tasks: [],
+        taskListMarkdown: '# 통합 테스트\n\n모든 Epic이 완료되었습니다. 통합 테스트를 진행합니다.',
+        summary: {
+          totalTasks: 0,
+          completedTasks: 0,
+          failedTasks: 0,
+        },
+      } as ScrumMasterOutput;
+    }
+
+    const testResult = integrationTesterExec.output;
+
+    // 통합 테스트 pass - 프로젝트 완료
+    if (testResult.testResult === 'pass') {
+      await this.log('통합 테스트 Pass - 프로젝트 완료');
+
+      return {
+        currentPhase: 'completed',
+        tasks: [],
+        taskListMarkdown: '# 프로젝트 완료 ✅\n\n모든 Epic과 통합 테스트가 완료되었습니다.\n\n## 프로젝트 요약\n\n' +
+          `- **총 Epic**: ${epicStoryData.epics.length}개\n` +
+          `- **총 Story**: ${epicStoryData.stories.length}개\n` +
+          `- **테스트 점수**: ${testResult.overallScore}/100\n`,
+        summary: {
+          totalTasks: 0,
+          completedTasks: 0,
+          failedTasks: 0,
+        },
+        integrationTestResult: {
+          result: 'pass',
+          testDate: new Date().toISOString(),
+        },
+      } as ScrumMasterOutput;
+    }
+
+    // 통합 테스트 fail - 대응 task 생성
+    await this.log('통합 테스트 Fail - 대응 Task 생성');
+
+    const additionalTasks = await this.generateIntegrationFailureTasks(testResult.failures, epicStoryData, input);
+
+    await this.log('통합 테스트 실패 대응 Task 생성 완료', {
+      additionalTaskCount: additionalTasks.length,
+    });
+
+    return {
+      currentPhase: 'integration-testing',
+      tasks: additionalTasks,
+      taskListMarkdown: this.generateIntegrationFailureTaskListMarkdown(testResult.failures, additionalTasks),
+      summary: {
+        totalTasks: additionalTasks.length,
+        completedTasks: 0,
+        failedTasks: testResult.failures?.length || 0,
+      },
+      integrationTestResult: {
+        result: 'fail',
+        testDate: new Date().toISOString(),
+      },
+      testFailures: testResult.failures,
+    } as ScrumMasterOutput;
+  }
+
+  private async generateIntegrationFailureTasks(
+    failures: any[],
+    epicStoryData: any,
+    input: ScrumMasterInput
+  ): Promise<Task[]> {
+    const prompt = this.buildIntegrationFailureAnalysisPrompt(failures, epicStoryData);
+
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 4096,
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
+
+      const text = response.content[0].type === 'text' ? response.content[0].text : '';
+      const taskList = this.parseTaskListResponse(text);
+
+      return taskList.map((taskData: any, index: number) => ({
+        id: `task-integration-fix-${index + 1}`,
+        title: `🔧 통합 수정: ${taskData.title}`,
+        description: taskData.description,
+        status: 'pending' as const,
+        assignedTo: 'developer' as const,
+        priority: 'high',
+        storyId: 'integration-fix',
+        epicOrder: 0,
+        storyOrder: 0,
+        taskOrder: 2000 + index,
+      }));
+    } catch (error: any) {
+      await this.logError(error);
+      throw new Error(`통합 테스트 실패 Task 생성 실패: ${error.message}`);
+    }
+  }
+
+  private buildIntegrationFailureAnalysisPrompt(failures: any[], epicStoryData: any): string {
+    const failuresText = JSON.stringify(failures, null, 2);
+    const epicSummary = epicStoryData.epics.map((e: any, i: number) =>
+      `${i + 1}. ${e.title}`
+    ).join('\n');
+
+    return `# 통합 테스트 실패 분석 및 대응 Task 생성
+
+당신은 BMad Method를 숙달한 Scrum Master입니다.
+프로젝트 전체 통합 테스트에서 발생한 실패 사유를 분석하여 이를 해결하기 위한 Task를 생성해주세요.
+
+## Epic 목록
+
+${epicSummary}
+
+## 통합 테스트 실패 목록
+
+\`\`\`json
+${failuresText}
+\`\`\`
+
+## Task 생성 원칙
+
+1. **Epic 간 통합 문제 해결**: 여러 Epic에 걸친 문제 해결
+2. **시스템 레벨**: 전체 시스템 관점에서 접근
+3. **구체적 행동**: 개발자가 바로 구현할 수 있는 수준
+4. **높은 우선순위**: 통합 테스트 실패 수정은 항상 high priority
+5. **재검증 가능**: 수정 후 통합 테스트 재검증 가능
+
+## 출력 형식
+
+JSON 배열로 출력하세요:
+
+\`\`\`json
+[
+  {
+    "title": "Epic 간 상태 공유 메커니즘 구현",
+    "description": "Epic 1(인증)과 Epic 2(대시보드) 간의 사용자 상태 공유를 위해 전역 상태 관리를 구현합니다. apps/web/src/lib/store/userStore.ts를 생성하고 Zustand를 사용하여 상태를 관리합니다.",
+    "priority": "high"
+  }
+]
+\`\`\`
+
+중요: 모든 통합 테스트 실패 사유를 해결할 수 있는 Task를 생성하세요.
+`;
+  }
+
+  private generateIntegrationFailureTaskListMarkdown(failures: any[], tasks: Task[]): string {
+    let markdown = `# 통합 테스트 실패 대응 Task List\n\n`;
+    markdown += `**실패 사유**: ${failures?.length || 0}개\n`;
+    markdown += `**대응 Task**: ${tasks.length}개\n\n`;
+    markdown += `---\n\n`;
+
+    markdown += `## 실패 사유\n\n`;
+    failures.forEach((failure, index) => {
+      markdown += `### ${index + 1}. ${failure.scenario}\n\n`;
+      markdown += `- **Severity**: ${failure.severity}\n`;
+      markdown += `- **Category**: ${failure.category}\n\n`;
+      markdown += `**예상 동작**: ${failure.expectedBehavior}\n\n`;
+      markdown += `**실제 동작**: ${failure.actualBehavior}\n\n`;
+    });
+
+    markdown += `---\n\n`;
+    markdown += `## 대응 Tasks\n\n`;
+
+    tasks.forEach((task, index) => {
+      markdown += `### ${index + 1}. ${task.title}\n\n`;
+      markdown += `- **Task ID**: ${task.id}\n`;
+      markdown += `- **Priority**: ${task.priority}\n`;
+      markdown += `- **Status**: ${task.status}\n\n`;
+      markdown += `**설명**:\n${task.description}\n\n`;
+      markdown += `---\n\n`;
+    });
+
+    return markdown;
   }
 
   private isRetryable(error: any): boolean {

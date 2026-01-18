@@ -60,3 +60,6 @@ prisma/migrations/**/migration.sql
 # Logs
 logs/
 *.log
+
+# Generated Projects
+projects/

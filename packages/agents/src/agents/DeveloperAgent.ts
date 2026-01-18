@@ -40,7 +40,7 @@ interface DeveloperOutput {
 
 export class DeveloperAgent extends Agent {
   private anthropic: Anthropic;
-  private projectRoot: string;
+  private magicWandRoot: string;
 
   constructor() {
     super({
@@ -65,8 +65,13 @@ export class DeveloperAgent extends Agent {
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
 
-    // 프로젝트 루트 경로 (monorepo 기준)
-    this.projectRoot = process.cwd();
+    // MAGIC WAND 루트 경로 (agents 패키지 기준)
+    this.magicWandRoot = process.cwd();
+  }
+
+  private getProjectDir(projectId: string): string {
+    // /projects/<projectId>/ 경로 반환
+    return join(this.magicWandRoot, 'projects', projectId);
   }
 
   async execute(input: DeveloperInput): Promise<AgentExecutionResult> {
@@ -213,7 +218,7 @@ export class DeveloperAgent extends Agent {
 
     // LLM을 통한 코드 생성
     const response = await this.anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 16384,
       temperature: 0.3,
       messages: [
@@ -253,6 +258,7 @@ export class DeveloperAgent extends Agent {
 
   private buildDevelopmentPrompt(task: any, prd: any, story: any, scrumMasterOutput: any): string {
     const prdContent = prd?.analysisMarkdown || '';
+    const projectId = task.projectId || 'current-project';
 
     return `# 개발 Task 수행 요청
 
@@ -288,20 +294,21 @@ ${prdContent.substring(0, 8000)}
 
 ## 프로젝트 구조
 
+생성되는 코드는 /projects/${projectId}/ 디렉토리에 저장됩니다:
+
 \`\`\`
-apps/
-  web/              # Frontend (Next.js App Router)
-    src/
-      app/          # App Router pages
-      components/   # React components
-      lib/          # Utilities
-  api/              # Backend (Next.js API Routes)
-    src/
-      routes/       # API routes
-      lib/          # Utilities
-packages/
-  db/               # Prisma schema
-  shared/           # Shared types
+projects/${projectId}/
+  apps/
+    web/              # Frontend (Next.js App Router)
+      src/
+        app/          # App Router pages
+        components/   # React components
+        lib/          # Utilities
+    api/              # Backend (Next.js API Routes)
+      src/
+        routes/       # API routes
+        lib/          # Utilities
+  docs/               # Documentation (PRD, Epic, Story)
 \`\`\`
 
 ## 코드 생성 가이드
@@ -351,6 +358,9 @@ import { NextRequest, NextResponse } from 'next/server';
     const generatedFiles: any[] = [];
     const changes: any[] = [];
 
+    // 프로젝트 디렉토리 경로
+    const projectDir = this.getProjectDir(input.projectId);
+
     // 파일 블록 추출
     const fileBlocks = text.match(/## 파일: (.+?)\n\n```[\s\S]*?```/g);
 
@@ -364,7 +374,7 @@ import { NextRequest, NextResponse } from 'next/server';
       if (!pathMatch) continue;
 
       const filePath = pathMatch[1].trim();
-      const fullPath = join(this.projectRoot, filePath);
+      const fullPath = join(projectDir, filePath);
 
       // 코드 내용 추출
       const codeMatch = block.match(/```(?:typescript|tsx|ts|js)?\n([\s\S]*?)```/);
@@ -397,11 +407,11 @@ import { NextRequest, NextResponse } from 'next/server';
         });
       } else {
         // 신규 파일인 경우 생성
-        const dirPath = fullPath.substring(0, fullPath.lastIndexOf('/'));
+        const dirPath = fullPath.substring(0, fullPath.lastIndexOf('\\')) || fullPath.substring(0, fullPath.lastIndexOf('/'));
 
         // 디렉토리 생성 (존재하지 않는 경우)
         try {
-          execSync(`mkdir -p "${dirPath}"`, { cwd: this.projectRoot });
+          execSync(`mkdir -p "${dirPath}"`, { cwd: projectDir, windowsHide: true });
         } catch (e) {
           // Directory might already exist, ignore error
         }

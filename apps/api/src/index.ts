@@ -8,11 +8,25 @@ import { getOrchestrator } from './orchestrator';
 import projectRoutes from './routes/projects';
 import uploadRoutes from './routes/upload';
 import surveyRoutes from './routes/survey';
+import surveyChatRoutes from './routes/survey-chat';
 import magicRoutes from './routes/magic';
 import issueRoutes from './routes/issues';
+import projectsFromPromptRoutes from './routes/projects-from-prompt';
+import * as path from 'path';
 
-// Load environment variables
-dotenv.config();
+// Load environment variables from current working directory (project root when running pnpm api:dev)
+const envPath = path.resolve(process.cwd(), '.env');
+console.log('[API] Loading .env from:', envPath);
+console.log('[API] process.cwd():', process.cwd());
+console.log('[API] File exists:', require('fs').existsSync(envPath));
+
+dotenv.config({ path: envPath });
+
+// Debug: 환경변수 로드 확인
+console.log('[API] AWS_REGION:', process.env.AWS_REGION || 'NOT SET');
+console.log('[API] S3_BUCKET:', process.env.S3_BUCKET || 'NOT SET');
+console.log('[API] AWS_ACCESS_KEY_ID:', process.env.AWS_ACCESS_KEY_ID?.substring(0, 10) + '...' || 'NOT SET');
+console.log('[API] UPSTAGE_API_KEY:', process.env.UPSTAGE_API_KEY?.substring(0, 10) + '...' || 'NOT SET');
 
 const app = express();
 const PORT = process.env.API_PORT || 4000;
@@ -43,8 +57,10 @@ app.get('/', (req, res) => {
 
 // Register routes
 app.use('/api/projects', projectRoutes);
+app.use('/api/projects', projectsFromPromptRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/survey', surveyRoutes);
+app.use('/api/survey-chat', surveyChatRoutes);
 app.use('/api/magic', magicRoutes);
 app.use('/api/issues', issueRoutes);
 

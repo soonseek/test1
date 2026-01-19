@@ -74,10 +74,27 @@ export class MagicOrchestrator {
   /**
    * 개발 일시정지
    */
-  public pauseDevelopment(projectId: string): void {
+  public async pauseDevelopment(projectId: string): Promise<void> {
     console.log(`[Orchestrator] ⏸️ Development paused for project ${projectId}`);
     this.paused.set(projectId, true);
     this.activeDevelopmentLoops.delete(projectId);  // 활성 루프에서 제거하여 UI가 일시정지 상태를 인식하게 함
+
+    // 현재 실행 중인 AgentExecution 상태를 PAUSED로 업데이트
+    const runningExecution = await prisma.agentExecution.findFirst({
+      where: {
+        projectId,
+        status: 'RUNNING',
+      },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (runningExecution) {
+      await prisma.agentExecution.update({
+        where: { id: runningExecution.id },
+        data: { status: 'PAUSED' },
+      });
+      console.log(`[Orchestrator] ✅ Updated agent execution ${runningExecution.id} to PAUSED`);
+    }
   }
 
   /**

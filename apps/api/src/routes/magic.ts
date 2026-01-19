@@ -509,9 +509,19 @@ router.post('/github/create-repo/:projectId', async (req, res) => {
       });
     }
 
-    // GitHub 레포지토리 URL 생성 (GitHub username은 환경변수에서 가져오거나 기본값 사용)
+    // GitHub 레포지토리 URL 생성
+    // GITHUB_ORG가 있으면 조직(orgs/ORG_NAME) 사용, 없으면 개인 사용자명(GITHUB_USERNAME) 사용
+    const githubOrg = process.env.GITHUB_ORG;
     const githubUsername = process.env.GITHUB_USERNAME || 'your-username';
-    const githubRepoUrl = `https://github.com/${githubUsername}/${trimmedRepoName}.git`;
+
+    let githubOwner: string;
+    if (githubOrg) {
+      githubOwner = `orgs/${githubOrg}`;  // 조직 형식: orgs/Studio-Burganova
+    } else {
+      githubOwner = githubUsername;  // 개인 사용자 형식: username
+    }
+
+    const githubRepoUrl = `https://github.com/${githubOrg || githubUsername}/${trimmedRepoName}.git`;
 
     // Orchestrator를 통해 GitHubPusherAgent 실행
     const orchestrator = getOrchestrator();

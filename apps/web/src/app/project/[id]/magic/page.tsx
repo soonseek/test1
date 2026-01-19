@@ -9,6 +9,7 @@ import EpicStoryView from './components/EpicStoryView';
 import DevelopmentView from './components/DevelopmentView';
 import DebuggingView from './components/DebuggingView';
 import FeatureAdditionView from './components/FeatureAdditionView';
+import { useToast } from '@/contexts/ToastContext';
 
 type AgentTab = 'overview' | 'requirement' | 'epic-story' | 'development' | 'debugging' | 'feature-addition' | 'errors';
 
@@ -49,6 +50,7 @@ export default function MagicPage() {
   const router = useRouter();
   const params = useParams();
   const projectId = params.id as string;
+  const toast = useToast();
 
   const [activeTab, setActiveTab] = useState<AgentTab>('overview');
   const [agentExecutions, setAgentExecutions] = useState<AgentExecution[]>([]);
@@ -59,6 +61,7 @@ export default function MagicPage() {
   const [currentViewingPRDId, setCurrentViewingPRDId] = useState<string | null>(null);
   const [showGitHubModal, setShowGitHubModal] = useState(false);
   const [repoName, setRepoName] = useState('');
+  const [githubPushLoading, setGithubPushLoading] = useState(false);
   const [project, setProject] = useState<any>(null);
   const [currentActivity, setCurrentActivity] = useState<{
     activity: string | null;
@@ -123,7 +126,7 @@ export default function MagicPage() {
       if (!response.ok) {
         const error = await response.json() as ApiErrorResponse;
         console.error('[Magic Page] Error:', error);
-        alert(`오류: ${error.error?.message || '마법 시작 실패'}`);
+        toast.showError(`오류: ${error.error?.message || '마법 시작 실패'}`);
         return;
       }
 
@@ -131,7 +134,7 @@ export default function MagicPage() {
       await fetchStatus();
     } catch (error) {
       console.error('[Magic Page] Fetch error:', error);
-      alert(`오류: ${error}`);
+      toast.showError(`오류: ${error}`);
     } finally {
       setLoading(false);
     }
@@ -151,14 +154,14 @@ export default function MagicPage() {
 
       if (!response.ok) {
         const error = await response.json() as ApiErrorResponse;
-        alert(`재시작 실패: ${error.error?.message}`);
+        toast.showError(`재시작 실패: ${error.error?.message}`);
         return;
       }
 
       await fetchStatus();
     } catch (error) {
       console.error(`[Magic Page] Failed to restart ${agentId}:`, error);
-      alert(`오류: ${error}`);
+      toast.showError(`오류: ${error}`);
     } finally {
       // 로딩 상태 종료
       setReloadingAgents(prev => {
@@ -186,15 +189,15 @@ export default function MagicPage() {
 
       if (!response.ok) {
         const error = await response.json() as ApiErrorResponse;
-        alert(`배포 실패: ${error.error?.message || '알 수 없는 오류'}`);
+        toast.showError(`배포 실패: ${error.error?.message || '알 수 없는 오류'}`);
         return;
       }
 
       const data = await response.json() as DeployResponse;
-      alert(`배포 시작되었습니다!\n배포 URL: ${data.deploymentUrl || '생성 중...'}`);
+      toast.showSuccess(`배포가 시작되었습니다!\n배포 URL: ${data.deploymentUrl || '생성 중...'}`);
     } catch (error) {
       console.error('[Magic Page] Deploy error:', error);
-      alert('배포 요청 실패');
+      toast.showError('배포 요청 실패');
     }
   };
 
@@ -208,7 +211,7 @@ export default function MagicPage() {
       });
 
       if (!response.ok) {
-        alert('PRD 선택 실패');
+        toast.showError('PRD 선택 실패');
         return;
       }
 
@@ -225,7 +228,7 @@ export default function MagicPage() {
       await fetchStatus();
     } catch (error) {
       console.error('PRD selection error:', error);
-      alert('PRD 선택 실패');
+      toast.showError('PRD 선택 실패');
     }
   };
 
@@ -280,7 +283,7 @@ export default function MagicPage() {
       await fetchStatus();
     } catch (error) {
       console.error('[Magic Page] Failed to start development:', error);
-      alert('개발 시작 실패');
+      toast.showError('개발 시작 실패');
     }
   };
 
@@ -299,7 +302,7 @@ export default function MagicPage() {
       await fetchStatus();
     } catch (error) {
       console.error('[Magic Page] Failed to pause development:', error);
-      alert('일시정지 실패');
+      toast.showError('일시정지 실패');
     }
   };
 
@@ -318,7 +321,7 @@ export default function MagicPage() {
       await fetchStatus();
     } catch (error) {
       console.error('[Magic Page] Failed to resume development:', error);
-      alert('재개 실패');
+      toast.showError('재개 실패');
     }
   };
 
@@ -706,10 +709,11 @@ export default function MagicPage() {
                 <button
                   onClick={async () => {
                     if (!repoName.trim()) {
-                      alert('레포지토리 이름을 입력해주세요');
+                      toast.showError('레포지토리 이름을 입력해주세요');
                       return;
                     }
 
+                    setGithubPushLoading(true);
                     try {
                       const response = await fetch(`http://localhost:4000/api/magic/github/create-repo/${projectId}`, {
                         method: 'POST',
@@ -719,21 +723,34 @@ export default function MagicPage() {
 
                       if (!response.ok) {
                         const error = await response.json() as ApiErrorResponse;
-                        alert(`레포지토리 생성 실패: ${error.error?.message || '알 수 없는 오류'}`);
+                        toast.showError(`레포지토리 생성 실패: ${error.error?.message || '알 수 없는 오류'}`);
+                        setGithubPushLoading(false);
                         return;
                       }
 
                       const data = await response.json() as GitHubCreateRepoResponse;
                       setShowGitHubModal(false);
-                      alert(`레포지토리가 생성되었습니다!\n${data.repoUrl}`);
+                      setGithubPushLoading(false);
+                      toast.showSuccess(`GitHub 레포지토리 생성 및 푸시를 시작했습니다.\n\n레포지토리: ${data.repoUrl}\n\n완료까지 몇 분 정도 소요됩니다.\n개발 탭의 Agent 출력에서 진행 상황을 확인할 수 있습니다.`);
                     } catch (error) {
                       console.error('[GitHub Modal] Error:', error);
-                      alert('레포지토리 생성 요청 실패');
+                      toast.showError('레포지토리 생성 요청 실패');
+                      setGithubPushLoading(false);
                     }
                   }}
-                  className="flex-1 px-4 py-3 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg transition-all"
+                  disabled={githubPushLoading}
+                  className={`flex-1 px-4 py-3 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg transition-all flex items-center justify-center gap-2 ${
+                    githubPushLoading ? 'opacity-75 cursor-not-allowed' : ''
+                  }`}
                 >
-                  생성 및 푸시
+                  {githubPushLoading ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      <span>처리 중...</span>
+                    </>
+                  ) : (
+                    '생성 및 푸시'
+                  )}
                 </button>
               </div>
             </div>

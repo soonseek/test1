@@ -9,6 +9,7 @@ interface GitHubPusherInput {
   projectId: string;
   codeDirectory: string;
   githubRepoUrl: string;
+  githubOwner: string; // GitHub API 호출용 owner (orgs/ORG_NAME 또는 username)
   githubPat: string;
   commitMessage?: string;
 }
@@ -59,7 +60,7 @@ export class GitHubPusherAgent extends Agent {
 
     try {
       // 1. GitHub 레포지토리 정보 추출
-      const { owner, repo } = this.parseGitHubUrl(input.githubRepoUrl);
+      const { owner, repo } = this.parseGitHubUrl(input.githubRepoUrl, input.githubOwner);
 
       // 2. Octokit 초기화
       const octokit = new Octokit({
@@ -121,20 +122,20 @@ export class GitHubPusherAgent extends Agent {
     }
   }
 
-  private parseGitHubUrl(url: string): { owner: string; repo: string } {
-    // GitHub URL 파싱
-    // 예: https://github.com/owner/repo.git
-    // 예: git@github.com:owner/repo.git
+  private parseGitHubUrl(url: string, githubOwner: string): { owner: string; repo: string } {
+    // GitHub URL에서 repo 이름만 추출 (owner는 이미 githubOwner로 제공됨)
+    // 예: https://github.com/owner/repo.git -> repo
+    // 예: git@github.com:owner/repo.git -> repo
 
     const patterns = [
-      /https?:\/\/github\.com\/([^\/]+)\/([^\/]+?)(\.git)?$/,
-      /git@github\.com:([^\/]+)\/([^\/]+?)(\.git)?$/,
+      /https?:\/\/github\.com\/[^\/]+\/([^\/]+?)(\.git)?$/,
+      /git@github\.com:[^\/]+\/([^\/]+?)(\.git)?$/,
     ];
 
     for (const pattern of patterns) {
       const match = url.match(pattern);
       if (match) {
-        return { owner: match[1], repo: match[2].replace('.git', '') };
+        return { owner: githubOwner, repo: match[1].replace('.git', '') };
       }
     }
 

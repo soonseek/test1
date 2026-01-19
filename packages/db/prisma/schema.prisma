@@ -221,6 +221,7 @@ enum IssueStatus {
 enum AgentStatus {
   IDLE
   RUNNING
+  PAUSED
   WAITING
   COMPLETED
   FAILED

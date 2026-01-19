@@ -50,7 +50,9 @@
       "SlashCommand(/bmad:core:workflows:party-mode)",
       "Bash(pnpm tsx:*)",
       "Bash(copy:*)",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(npx prisma migrate dev:*)",
+      "Bash(pnpm run dev)"
     ]
   }
 }

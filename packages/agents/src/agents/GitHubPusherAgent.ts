@@ -185,7 +185,11 @@ export class GitHubPusherAgent extends Agent {
     owner: string,
     repo: string
   ): Promise<{ commitSha: string; branch: string }> {
-    const branch = 'main';
+    // 현재 브랜치 감지 (master, main, develop 등 모두 지원)
+    const { stdout: currentBranch } = await execa('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
+    const branch = currentBranch.trim();
+
+    await this.log(`현재 브랜치: ${branch}`);
 
     // git push
     await execa('git', ['push', '-u', 'origin', branch], { cwd, timeout: 120000 });

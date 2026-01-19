@@ -225,17 +225,6 @@ export class GitHubPusherAgent extends Agent {
     return false;
   }
 
-  private isRetryable(error: any): boolean {
-    const retryableMessages = [
-      'timeout',
-      'ETIMEDOUT',
-      'ECONNRESET',
-      'ENOTFOUND',
-      'ECONNREFUSED',
-    ];
-    return retryableMessages.some(msg => error.message?.includes(msg));
-  }
-
   private async updateDeployment(projectId: string, output: GitHubPusherOutput): Promise<void> {
     await prisma.deployment.update({
       where: { projectId },

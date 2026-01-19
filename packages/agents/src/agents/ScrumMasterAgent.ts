@@ -378,16 +378,60 @@ export class ScrumMasterAgent extends Agent {
   ): Promise<ScrumMasterOutput> {
     await this.log('Task List 생성 시작');
 
-    // 이전 완료된 story 찾기
+    // 이전 완료된 story 찾기 (Developer 실행 결과 기반)
     const previousExecution = await this.getPreviousExecution(input.projectId);
     const completedStories = new Set<string>();
 
+    // 각 스토리별 태스크 완료 현황 추적
+    const storyTaskCompletion = new Map<string, { totalTasks: number; completedTasks: number; storyKey: string }>();
+
+    // 1. 먼저 Scrum Master 실행에서 각 스토리의 총 태스크 수 확인
     for (const exec of previousExecution) {
-      const output = exec.output as any;
-      if (output && output.currentStory) {
-        const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
-        if (exec.status === 'COMPLETED') {
-          completedStories.add(storyKey);
+      if (exec.agentId === 'scrum-master') {
+        const output = exec.output as any;
+        if (output && output.currentStory && output.tasks && output.tasks.length > 0) {
+          const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
+
+          // 이전에 기록된 적이 없는 경우에만 총 태스크 수 기록
+          if (!storyTaskCompletion.has(storyKey)) {
+            storyTaskCompletion.set(storyKey, {
+              totalTasks: output.tasks.length,
+              completedTasks: 0,
+              storyKey,
+            });
+            await this.log(`Story 총 태스크 수 확인: ${storyKey} (${output.tasks.length}개)`, {
+              totalTasks: output.tasks.length,
+            });
+          }
+        }
+      }
+    }
+
+    // 2. Developer 실행 결과에서 완료된 태스크 수 확인
+    for (const exec of previousExecution) {
+      if (exec.agentId === 'developer' && exec.status === 'COMPLETED') {
+        const output = exec.output as any;
+        if (output && output.currentTask && output.currentStory) {
+          const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
+          const completion = storyTaskCompletion.get(storyKey);
+
+          if (completion) {
+            completion.completedTasks++;
+
+            // 모든 태스크가 완료되었는지 확인
+            if (completion.completedTasks >= completion.totalTasks) {
+              completedStories.add(storyKey);
+              await this.log(`✅ Story 완료 확인: ${storyKey}`, {
+                totalTasks: completion.totalTasks,
+                completedTasks: completion.completedTasks,
+              });
+            } else {
+              await this.log(`🔄 태스크 진행 중: ${storyKey} (${completion.completedTasks}/${completion.totalTasks})`, {
+                totalTasks: completion.totalTasks,
+                completedTasks: completion.completedTasks,
+              });
+            }
+          }
         }
       }
     }
@@ -438,10 +482,45 @@ export class ScrumMasterAgent extends Agent {
     });
 
     // LLM을 통한 Task 생성
-    const tasks = await this.generateTasksForStory(prd, currentEpic, currentStory, epicOrder, storyOrder);
+    let tasks = await this.generateTasksForStory(prd, currentEpic, currentStory, epicOrder, storyOrder);
+
+    // Developer의 이전 실행 결과를 확인하여 Task 상태 업데이트
+    const developerExecutions = previousExecution.filter(e => e.agentId === 'developer');
+    if (developerExecutions.length > 0) {
+      // Developer가 이미 실행한 태스크들 상태 업데이트
+      for (const devExec of developerExecutions) {
+        const devOutput = devExec.output as any;
+        if (devOutput && devOutput.currentTask) {
+          const taskToUpdate = tasks.find(t => t.id === devOutput.currentTask.id);
+          if (taskToUpdate && devExec.status === 'COMPLETED') {
+            taskToUpdate.status = 'completed';
+            await this.log(`Task 완료 상태 업데이트: ${taskToUpdate.id}`);
+          } else if (taskToUpdate && devExec.status === 'FAILED') {
+            taskToUpdate.status = 'failed';
+            await this.log(`Task 실패 상태 업데이트: ${taskToUpdate.id}`);
+          }
+        }
+      }
+
+      // 진행 중인 태스크 상태도 확인
+      const latestDevExec = developerExecutions[0];
+      if (latestDevExec.status === 'RUNNING' || latestDevExec.status === 'COMPLETED') {
+        const devOutput = latestDevExec.output as any;
+        if (devOutput && devOutput.currentTask) {
+          const inProgressTask = tasks.find(t => t.id === devOutput.currentTask.id);
+          if (inProgressTask && inProgressTask.status === 'pending') {
+            inProgressTask.status = latestDevExec.status === 'COMPLETED' ? 'completed' : 'in-progress';
+          }
+        }
+      }
+    }
 
     // Task List Markdown 생성
     const taskListMarkdown = this.generateTaskListMarkdown(currentEpic, currentStory, tasks);
+
+    // Summary 계산 (실제 Task 상태 기반)
+    const completedCount = tasks.filter(t => t.status === 'completed').length;
+    const failedCount = tasks.filter(t => t.status === 'failed').length;
 
     const output: ScrumMasterOutput = {
       currentPhase: 'task-creation',
@@ -460,13 +539,15 @@ export class ScrumMasterAgent extends Agent {
       taskListMarkdown,
       summary: {
         totalTasks: tasks.length,
-        completedTasks: 0,
-        failedTasks: 0,
+        completedTasks: completedCount,
+        failedTasks: failedCount,
       },
     };
 
     await this.log('Task List 생성 완료', {
       taskCount: tasks.length,
+      completedCount,
+      failedCount,
     });
 
     return output;
@@ -1301,11 +1382,5 @@ JSON 배열로 출력하세요:
     });
 
     return markdown;
-  }
-
-  private isRetryable(error: any): boolean {
-    return error.message?.includes('timeout') ||
-           error.message?.includes('rate limit') ||
-           error.code === 'ECONNRESET';
   }
 }

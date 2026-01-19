@@ -828,10 +828,4 @@ ${story.acceptanceCriteria.map((criteria: string, i: number) => `${i + 1}. [ ] $
       console.error('[EpicStory] Failed to update progress:', error);
     }
   }
-
-  private isRetryable(error: any): boolean {
-    return error.message?.includes('timeout') ||
-           error.message?.includes('rate limit') ||
-           error.code === 'ECONNRESET';
-  }
 }

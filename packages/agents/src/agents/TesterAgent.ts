@@ -315,17 +315,25 @@ export class TesterAgent extends Agent {
     const prompt = this.buildUITestPrompt(developerOutput, story);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4096,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 4096,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        'UI testing',
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
       return this.parseTestResponse(text, 'ui');
@@ -355,17 +363,25 @@ export class TesterAgent extends Agent {
     const prompt = this.buildAPITestPrompt(developerOutput, story);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4096,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 4096,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        'API testing',
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
       return this.parseTestResponse(text, 'api');
@@ -396,17 +412,25 @@ export class TesterAgent extends Agent {
     const prompt = this.buildDatabaseTestPrompt(developerOutput, story, scrumMasterOutput);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4096,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 4096,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        'Database testing',
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
       return this.parseTestResponse(text, 'database');
@@ -763,17 +787,25 @@ Category: database, integration, edge-case
     const prompt = this.buildEpicTestPrompt(epic, storiesInEpic, epicStoryData);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 8192,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 8192,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        'Epic testing',
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
       const testResults = this.parseEpicTestResponse(text);
@@ -862,17 +894,25 @@ Category: database, integration, edge-case
     const prompt = this.buildIntegrationTestPrompt(epicStoryData);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 8192,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 8192,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        'Integration testing',
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
       const testResults = this.parseIntegrationTestResponse(text);
@@ -1152,11 +1192,5 @@ Category: ui, api, database, integration, edge-case
   private parseIntegrationTestResponse(text: string): { failures: TestFailure[], successes: string[] } {
     // Epic 테스트 파싱과 동일한 로직
     return this.parseEpicTestResponse(text);
-  }
-
-  private isRetryable(error: any): boolean {
-    return error.message?.includes('timeout') ||
-           error.message?.includes('rate limit') ||
-           error.code === 'ECONNRESET';
   }
 }

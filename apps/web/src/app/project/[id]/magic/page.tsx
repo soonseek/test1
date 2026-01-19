@@ -342,7 +342,7 @@ export default function MagicPage() {
 
       {/* Header */}
       <div className="relative glass-card border-b border-vivid-purple/20">
-        <div className="max-w-7xl mx-auto px-4 py-5">
+        <div className="w-full mx-auto px-4 py-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Link href="/">
@@ -418,7 +418,7 @@ export default function MagicPage() {
 
       {/* Tabs */}
       <div className="relative glass-card border-b border-vivid-purple/20 overflow-x-auto">
-        <div className="max-w-7xl mx-auto px-4">
+        <div className="w-full mx-auto px-4">
           <div className="flex gap-2 py-3">
             {tabs.map(tab => {
               const executions = tab.agentId ? getAgentExecutions(tab.agentId) :
@@ -499,7 +499,7 @@ export default function MagicPage() {
       </div>
 
       {/* Content */}
-      <div className="relative max-w-7xl mx-auto px-4 py-8">
+      <div className="relative w-full mx-auto px-4 py-8">
         {activeTab === 'overview' && (
           <div className="space-y-4">
             <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">

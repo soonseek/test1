@@ -250,16 +250,6 @@ export class NetlifyDeployerAgent extends Agent {
     throw new Error('배포 시간 초과');
   }
 
-  private isRetryable(error: any): boolean {
-    const retryableMessages = [
-      'timeout',
-      'ETIMEDOUT',
-      'rate limit',
-      '429',
-    ];
-    return retryableMessages.some(msg => error.message?.toLowerCase().includes(msg.toLowerCase()));
-  }
-
   private async updateDeployment(projectId: string, output: NetlifyDeployerOutput): Promise<void> {
     await prisma.deployment.update({
       where: { projectId },

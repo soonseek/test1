@@ -352,12 +352,6 @@ export class CodeGeneratorAgent extends Agent {
     return { success, partial, warnings };
   }
 
-  private isRetryable(error: any): boolean {
-    // 타임아웃, 네트워크 오류 등은 재시도 가능
-    const retryableMessages = ['timeout', 'ETIMEDOUT', 'ECONNRESET'];
-    return retryableMessages.some(msg => error.message?.includes(msg));
-  }
-
   private async saveResult(projectId: string, workspaceDir: string, output: CodeGeneratorOutput): Promise<void> {
     await prisma.agentExecution.create({
       data: {

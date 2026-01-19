@@ -227,17 +227,25 @@ export class RequirementAnalyzerAgent extends Agent {
     const prompt = this.buildAnalysisPrompt(context);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-opus-4-5-20251101',
-        max_tokens: 8192,
-        temperature: 0.3, // Lower temperature for more structured output
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-opus-4-5-20251101',
+            max_tokens: 8192,
+            temperature: 0.3, // Lower temperature for more structured output
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        'PRD deep analysis',
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       // Extract the analysis from Claude's response
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
@@ -258,17 +266,25 @@ export class RequirementAnalyzerAgent extends Agent {
     const prompt = this.buildAnalysisPrompt(context, strategyModifier);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-opus-4-5-20251101',
-        max_tokens: 8192,
-        temperature: 0.3,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-opus-4-5-20251101',
+            max_tokens: 8192,
+            temperature: 0.3,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        `PRD analysis with strategy: ${strategyModifier.substring(0, 50)}...`,
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
 
@@ -873,13 +889,5 @@ ${analysis.riskAssessment?.map((risk: any) =>
     });
 
     return markdown;
-  }
-
-  private isRetryable(error: any): boolean {
-    // Retry on API rate limits, network errors, etc.
-    if (error.status === 429) return true; // Rate limit
-    if (error.status >= 500) return true; // Server errors
-    if (error.code === 'ECONNRESET') return true; // Network error
-    return false;
   }
 }

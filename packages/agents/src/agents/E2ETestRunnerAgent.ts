@@ -257,11 +257,6 @@ test.describe('Basic Smoke Tests', () => {
     return { summary, failedTests, coverageReport };
   }
 
-  private isRetryable(error: any): boolean {
-    const retryableMessages = ['timeout', 'ETIMEDOUT', 'network error'];
-    return retryableMessages.some(msg => error.message?.toLowerCase().includes(msg.toLowerCase()));
-  }
-
   private async saveResults(projectId: string, output: E2ETestRunnerOutput): Promise<void> {
     await prisma.agentExecution.create({
       data: {

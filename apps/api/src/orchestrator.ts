@@ -77,6 +77,7 @@ export class MagicOrchestrator {
   public pauseDevelopment(projectId: string): void {
     console.log(`[Orchestrator] ⏸️ Development paused for project ${projectId}`);
     this.paused.set(projectId, true);
+    this.activeDevelopmentLoops.delete(projectId);  // 활성 루프에서 제거하여 UI가 일시정지 상태를 인식하게 함
   }
 
   /**
@@ -783,12 +784,56 @@ export class MagicOrchestrator {
         return t.epicOrder === currentEpicOrder;
       }) || [];
 
-      // 모든 Task가 완료된 경우
+      // 모든 Task가 완료된 경우 - 다음 Story로 넘어가기 위해 Scrum Master 재실행
       if (pendingTasks.length === 0) {
         console.log(`[Orchestrator] ✅ All ${completedTasks.length} tasks completed for Epic ${currentEpicOrder}`);
-        this.activeDevelopmentLoops.delete(projectId);
-        console.log(`[Orchestrator] 🔄 Development loop completed for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
-        return { success: true, tasksCompleted: completedTasks.length };
+
+        if (completedTasks.length > 0) {
+          // 다음 Story의 Task List를 생성하기 위해 Scrum Master 재실행
+          console.log('[Orchestrator] 다음 Story의 Task List를 생성하기 위해 Scrum Master 재실행...');
+
+          const scrumMasterResult = await this.runAgent('scrum-master', projectId, {
+            projectId,
+            project: {
+              name: project.name,
+              description: project.description,
+              wizardLevel: project.wizardLevel,
+            },
+            epicStory: epicStoryOutput,
+            selectedPRD,
+          });
+
+          if (scrumMasterResult.status !== 'COMPLETED') {
+            console.error('[Orchestrator] ❌ Scrum Master 재실행 실패');
+            this.activeDevelopmentLoops.delete(projectId);
+            console.log(`[Orchestrator] 🔄 Development loop completed for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
+            return { success: false, tasksCompleted: completedTasks.length };
+          }
+
+          const newScrumMasterOutput = scrumMasterResult.output as any;
+          const newTasks = newScrumMasterOutput.tasks || [];
+
+          // 새로운 pending Task가 있는지 확인
+          const newPendingTasks = newTasks.filter((t: any) => t.status === 'pending');
+
+          if (newPendingTasks.length === 0) {
+            // 진짜로 모든 Story/Epic 완료
+            console.log('[Orchestrator] 🎉 모든 Story/Epic 완료!');
+            this.activeDevelopmentLoops.delete(projectId);
+            console.log(`[Orchestrator] 🔄 Development loop completed for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
+            return { success: true, tasksCompleted: completedTasks.length };
+          }
+
+          console.log(`[Orchestrator] ✅ 다음 Story의 Task List 생성됨: ${newPendingTasks.length} tasks`);
+          // 다음 iteration에서 새로운 Task들을 처리함
+          continue;
+        } else {
+          // Task가 없는 경우 (최초 시작)
+          console.log('[Orchestrator] ⚠️ Task가 없습니다. Scrum Master를 먼저 실행해주세요.');
+          this.activeDevelopmentLoops.delete(projectId);
+          console.log(`[Orchestrator] 🔄 Development loop completed for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
+          return { success: true, tasksCompleted: 0 };
+        }
       }
 
       console.log(`[Orchestrator] Iteration ${iteration}: ${pendingTasks.length} pending tasks (Epic ${currentEpicOrder})`);

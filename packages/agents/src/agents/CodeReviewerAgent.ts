@@ -248,17 +248,25 @@ export class CodeReviewerAgent extends Agent {
     const prompt = this.buildReviewPrompt(filePath, content, story, task);
 
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4096,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+      const response = await this.retryWithBackoff(
+        async () => {
+          return await this.anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 4096,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+          });
+        },
+        `Code review for ${filePath}`,
+        3, // maxRetries
+        5000, // initialDelay = 5 seconds
+        2 // backoffMultiplier
+      );
 
       const text = response.content[0].type === 'text' ? response.content[0].text : '';
 
@@ -471,11 +479,5 @@ Category: functionality, security, performance, code-quality, type-safety, best-
     } catch (error) {
       console.error('[CodeReviewer] Failed to update progress:', error);
     }
-  }
-
-  private isRetryable(error: any): boolean {
-    return error.message?.includes('timeout') ||
-           error.message?.includes('rate limit') ||
-           error.code === 'ECONNRESET';
   }
 }

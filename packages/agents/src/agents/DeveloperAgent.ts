@@ -250,32 +250,29 @@ export class DeveloperAgent extends Agent {
     // 프롬프트 빌드
     const prompt = this.buildDevelopmentPrompt(task, prd, story, scrumMasterOutput);
 
-    // LLM 응답 재시도 로직 (최대 3회)
-    let lastError: Error | null = null;
+    // LLM 응답 재시도 로직 (지수 백오프 적용)
     let generatedFiles: any[] = [];
     let changes: any[] = [];
-    let success = false;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await this.log(`LLM 코드 생성 시도 ${attempt}/3`, {
-        taskId: task.id,
-      });
+    const response = await this.retryWithBackoff(
+      async () => {
+        await this.log('LLM 코드 생성 시도', {
+          taskId: task.id,
+        });
 
-      try {
-        // LLM을 통한 코드 생성
-        const response = await this.anthropic.messages.create({
+        const llmResponse = await this.anthropic.messages.create({
           model: 'claude-sonnet-4-5-20250929',
           max_tokens: 16384,
           temperature: 0.3,
           messages: [
             {
               role: 'user',
-              content: attempt > 1 ? `${prompt}\n\n**중요**: 반드시 ## 파일: 경로 형식으로 코드를 생성해주세요.` : prompt,
+              content: prompt,
             },
           ],
         });
 
-        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const text = llmResponse.content[0].type === 'text' ? llmResponse.content[0].text : '';
 
         // 생성된 코드 파싱 및 파일 작성
         const result = await this.parseAndWriteCode(text, task, input);
@@ -283,37 +280,23 @@ export class DeveloperAgent extends Agent {
         changes = result.changes;
 
         // 파일이 하나라도 생성되었는지 확인
-        if (generatedFiles.length > 0 || changes.length > 0) {
-          success = true;
-          await this.log(`LLM 코드 생성 성공 (시도 ${attempt})`, {
-            taskId: task.id,
-            filesCreated: generatedFiles.length,
-            filesModified: changes.length,
-          });
-          break;
-        } else {
-          await this.log(`LLM 응답에서 파일을 찾지 못함 (시도 ${attempt})`, {
-            taskId: task.id,
-            responseLength: text.length,
-          });
-          lastError = new Error(`시도 ${attempt}: LLM이 파일을 생성하지 않았습니다`);
+        if (generatedFiles.length === 0 && changes.length === 0) {
+          throw new Error(`LLM이 파일을 생성하지 않았습니다 (response length: ${text.length})`);
         }
-      } catch (error: any) {
-        await this.logError(error as Error);
-        lastError = error;
-      }
 
-      // 마지막 시도가 아니면 잠시 대기
-      if (attempt < 3) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-    }
+        await this.log('LLM 코드 생성 성공', {
+          taskId: task.id,
+          filesCreated: generatedFiles.length,
+          filesModified: changes.length,
+        });
 
-    // 모든 시도가 실패한 경우
-    if (!success || lastError) {
-      await this.logError(lastError || new Error('코드 생성 실패'));
-      throw new Error(`Task "${task.title}" 개발 실패: LLM이 3회 시도 후에도 파일을 생성하지 않았습니다. ${lastError?.message || ''}`);
-    }
+        return llmResponse;
+      },
+      `Task "${task.title}" LLM code generation`,
+      3, // maxRetries
+      5000, // initialDelay = 5 seconds (Ralphy uses 5s)
+      2 // backoffMultiplier = 2 (exponential: 5s, 10s, 20s)
+    );
 
     // Task 상태 업데이트
     const completedTasks = [
@@ -701,11 +684,5 @@ export default function Home() {
     } catch (error) {
       await this.logError(error as Error);
     }
-  }
-
-  private isRetryable(error: any): boolean {
-    return error.message?.includes('timeout') ||
-           error.message?.includes('rate limit') ||
-           error.code === 'ECONNRESET';
   }
 }

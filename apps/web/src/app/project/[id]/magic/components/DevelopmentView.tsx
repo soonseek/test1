@@ -369,11 +369,11 @@ export default function DevelopmentView({
     );
   }
 
-  // ========== 3열 레이아웃 개발 진행 중 UI ==========
+  // ========== 3열 레이아웃 개발 진행 중 UI (1:1:2 비율) ==========
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
       {/* ========== 1열: 개발 진행 상황 + Epic/Story ========== */}
-      <div className="space-y-5">
+      <div className="lg:col-span-1 space-y-5">
         {/* 개발 진행 상황 카드 */}
         <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border-2 border-white/20 shadow-card">
           <div className="mb-4">
@@ -391,25 +391,31 @@ export default function DevelopmentView({
                     {completedPoints} / {totalPoints} Points
                   </div>
                 </div>
-                {/* 일시정지/재개 버튼 */}
-                {onPauseDevelopment && (
-                  <button
-                    onClick={onPauseDevelopment}
-                    className="p-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg transition-all border-2 border-amber-500/30"
-                    title="개발 일시정지"
-                  >
-                    <Pause size={16} />
-                  </button>
-                )}
-                {onResumeDevelopment && (
-                  <button
-                    onClick={onResumeDevelopment}
-                    className="p-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-all border-2 border-green-500/30"
-                    title="개발 재개"
-                  >
-                    <Play size={16} />
-                  </button>
-                )}
+                {/* 일시정지/재개 버튼 - 상호 배타적 표시 */}
+                {(() => {
+                  const isRunning = latestExecution?.status === 'RUNNING';
+                  return isRunning ? (
+                    onPauseDevelopment && (
+                      <button
+                        onClick={onPauseDevelopment}
+                        className="p-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg transition-all border-2 border-amber-500/30"
+                        title="개발 일시정지"
+                      >
+                        <Pause size={16} />
+                      </button>
+                    )
+                  ) : (
+                    onResumeDevelopment && (
+                      <button
+                        onClick={onResumeDevelopment}
+                        className="p-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-all border-2 border-green-500/30"
+                        title="개발 재개"
+                      >
+                        <Play size={16} />
+                      </button>
+                    )
+                  );
+                })()}
               </div>
             </div>
 
@@ -585,7 +591,7 @@ export default function DevelopmentView({
       </div>
 
       {/* ========== 2열: Tasks ========== */}
-      <div className="space-y-5">
+      <div className="lg:col-span-1 space-y-5">
         {/* Tasks Header */}
         <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-white/20 shadow-card">
           <div className="flex items-center justify-between mb-4">
@@ -644,12 +650,12 @@ export default function DevelopmentView({
                           {task.status === 'pending' && (
                             <span className="text-gray-400 text-lg">○</span>
                           )}
-                          <span className="text-white text-base font-semibold">{task.title}</span>
+                          <span className="text-white text-base font-semibold truncate flex-1">{task.title}</span>
                           {isTaskRunning && (
-                            <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+                            <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
                           )}
                         </div>
-                        <p className="text-white/70 text-sm ml-7">{task.description}</p>
+                        <p className="text-white/70 text-sm ml-7 break-words">{task.description}</p>
                       </div>
                       <span className={`text-sm px-3 py-1.5 rounded-lg font-semibold border-2 whitespace-nowrap ml-2 ${
                         task.priority === 'high' ? 'bg-red-500/20 text-red-300 border-red-500/50 shadow-glow' :
@@ -674,7 +680,7 @@ export default function DevelopmentView({
       </div>
 
       {/* ========== 3열: 에이전트 실시간 출력 ========== */}
-      <div className="space-y-5">
+      <div className="lg:col-span-2 space-y-5">
         {/* Current Agent Activity (새로운 카드) */}
         {latestExecution && latestExecution.status === 'RUNNING' && currentActivity?.activity && (
           <div className="bg-gradient-to-br from-yellow-500/10 to-amber-500/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-yellow-500/40 shadow-glow animate-pulse-glow">

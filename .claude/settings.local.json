@@ -48,7 +48,9 @@
       "Bash(pnpm build)",
       "Bash(pnpm clean:*)",
       "SlashCommand(/bmad:core:workflows:party-mode)",
-      "Bash(pnpm tsx:*)"
+      "Bash(pnpm tsx:*)",
+      "Bash(copy:*)",
+      "Bash(tasklist:*)"
     ]
   }
 }

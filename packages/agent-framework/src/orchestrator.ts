@@ -1,4 +1,4 @@
-import { Agent } from './agent';
+import { Agent } from './Agent';
 import { AgentConfig, AgentStatus, AgentContext } from '@magic-wand/shared';
 import Pino from 'pino';
 

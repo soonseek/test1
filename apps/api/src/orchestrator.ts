@@ -27,10 +27,14 @@ interface MagicStartEvent {
 
 export class MagicOrchestrator {
   private agents: Map<string, any>;
+  private paused: Map<string, boolean>; // projectId -> paused state
+  private activeDevelopmentLoops: Set<string>; // 현재 실행 중인 개발 루프
 
   constructor() {
     // 모든 Agent 초기화
     this.agents = new Map();
+    this.paused = new Map(); // 일시정지 상태 초기화
+    this.activeDevelopmentLoops = new Set(); // 활성 개발 루프 추적 초기화
     this.agents.set('requirement-analyzer', new RequirementAnalyzerAgent());
     this.agents.set('epic-story', new EpicStoryAgent());
     this.agents.set('scrum-master', new ScrumMasterAgent());
@@ -65,6 +69,47 @@ export class MagicOrchestrator {
 
     console.log('[Orchestrator] ✅ Subscribed to magic.start event');
     console.log('✅ Magic Orchestrator started and listening for magic.start events');
+  }
+
+  /**
+   * 개발 일시정지
+   */
+  public pauseDevelopment(projectId: string): void {
+    console.log(`[Orchestrator] ⏸️ Development paused for project ${projectId}`);
+    this.paused.set(projectId, true);
+  }
+
+  /**
+   * 개발 재개
+   */
+  public resumeDevelopment(projectId: string): void {
+    console.log(`[Orchestrator] ▶️ Development resumed for project ${projectId}`);
+    this.paused.set(projectId, false);
+  }
+
+  /**
+   * 일시정지 상태 확인
+   */
+  public isPaused(projectId: string): boolean {
+    return this.paused.get(projectId) || false;
+  }
+
+  /**
+   * 개발 루프 활성 상태 확인
+   */
+  public isDevelopmentActive(projectId: string): boolean {
+    return this.activeDevelopmentLoops.has(projectId);
+  }
+
+  /**
+   * 일시정지 대기 (일시정지 상태가 풀릴 때까지 대기)
+   */
+  private async waitForResume(projectId: string): Promise<void> {
+    while (this.isPaused(projectId)) {
+      console.log(`[Orchestrator] ⏸️ Development is paused for project ${projectId}, waiting...`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    console.log(`[Orchestrator] ▶️ Development resumed for project ${projectId}`);
   }
 
   public async runMagic(data: MagicStartEvent) {
@@ -437,6 +482,676 @@ export class MagicOrchestrator {
       console.log(`[Orchestrator] ========== runAgent FAILED: ${agentId} ==========`);
       throw error;
     }
+  }
+
+  /**
+   * 개발 단계 실행 (Scrum Master → Developer → Code Reviewer → Tester)
+   */
+  public async runDevelopmentPhase(projectId: string) {
+    console.log('[Orchestrator] ========== Starting Development Phase ==========');
+
+    try {
+      // 1. 프로젝트 정보 조회
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        include: {
+          sessionFiles: true,
+          surveyAnswer: true,
+          agentExecutions: {
+            orderBy: { startedAt: 'desc' },
+          },
+        },
+      });
+
+      if (!project) {
+        throw new Error('Project not found');
+      }
+
+      // 2. Epic & Story 결과 가져오기
+      const epicStoryExecution = project.agentExecutions.find(
+        (e: any) => e.agentId === 'epic-story' && e.status === 'COMPLETED'
+      );
+
+      if (!epicStoryExecution) {
+        throw new Error('Epic & Story가 완료되지 않았습니다');
+      }
+
+      const epicStoryOutput = epicStoryExecution.output;
+      console.log('[Orchestrator] Found Epic & Story output');
+
+      // 3. PRD 가져오기
+      const requirementExecution = project.agentExecutions.find(
+        (e: any) => e.agentId === 'requirement-analyzer' && e.status === 'COMPLETED'
+      );
+
+      if (!requirementExecution) {
+        throw new Error('PRD가 완료되지 않았습니다');
+      }
+
+      const selectedPRD = (requirementExecution.output as any).prdOptions?.[1];
+      console.log('[Orchestrator] Found PRD');
+
+      // 4. Scrum Master 실행 (이미 완료된 경우 스킵)
+      let scrumMasterOutput = null;
+      const scrumMasterExecution = project.agentExecutions.find(
+        (e: any) => e.agentId === 'scrum-master' && e.status === 'COMPLETED'
+      );
+
+      if (scrumMasterExecution) {
+        console.log('[Orchestrator] Scrum Master already completed, skipping...');
+        scrumMasterOutput = scrumMasterExecution.output;
+      } else {
+        console.log('[Orchestrator] Phase 1: Running Scrum Master...');
+        const scrumMasterResult = await this.runAgent('scrum-master', projectId, {
+          projectId,
+          project: {
+            name: project.name,
+            description: project.description,
+            wizardLevel: project.wizardLevel,
+          },
+          epicStory: epicStoryOutput,
+          selectedPRD,
+        });
+
+        if (scrumMasterResult.status !== 'COMPLETED') {
+          throw new Error('Scrum Master execution failed');
+        }
+
+        scrumMasterOutput = scrumMasterResult.output;
+        console.log('[Orchestrator] ✅ Scrum Master completed');
+      }
+
+      // 5. 전체 개발 및 테스트 워크플로우 실행
+      console.log('[Orchestrator] Phase 2: Running complete development & test workflow...');
+
+      const workflowResult = await this.runCompleteDevelopmentWorkflow({
+        projectId,
+        project,
+        epicStoryOutput,
+        selectedPRD,
+        scrumMasterOutput,
+      });
+
+      console.log('[Orchestrator] ✅✅✅ Development Phase completed');
+      return workflowResult;
+    } catch (error: any) {
+      console.error('[Orchestrator] ❌ Development Phase failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 전체 개발 및 테스트 워크플로우 실행
+   *
+   * 워크플로우:
+   * 1. 각 Task에 대해 Developer → Code Reviewer → Tester 순환
+   * 2. Epic 완료 시 Epic 단위 테스트
+   * 3. 모든 Epic 완료 시 통합 테스트
+   * 4. Fail 시 대응 Task 생성 및 재시도
+   */
+  private async runCompleteDevelopmentWorkflow(params: {
+    projectId: string;
+    project: any;
+    epicStoryOutput: any;
+    selectedPRD: any;
+    scrumMasterOutput: any;
+  }): Promise<any> {
+    const { projectId, project, epicStoryOutput, selectedPRD, scrumMasterOutput } = params;
+
+    const totalEpics = epicStoryOutput.epics?.length || 0;
+    let currentEpicOrder = 1;
+
+    // Epic 루프
+    while (currentEpicOrder <= totalEpics) {
+      console.log(`[Orchestrator] 📚 Epic ${currentEpicOrder}/${totalEpics} 시작`);
+
+      // Epic 내 모든 Story 개발 완료될 때까지 루프
+      let epicCompleted = false;
+      let epicRetryCount = 0;
+      const maxEpicRetries = 5;
+
+      while (!epicCompleted && epicRetryCount < maxEpicRetries) {
+        // Step 1: Developer → Code Reviewer → Tester 순환 루프
+        const devResult = await this.runDevelopmentLoop({
+          projectId,
+          project,
+          epicStoryOutput,
+          selectedPRD,
+          currentEpicOrder,
+        });
+
+        if (!devResult.success) {
+          console.log('[Orchestrator] ❌ Development loop failed');
+          throw new Error('Development loop failed');
+        }
+
+        // Step 2: Epic 단위 테스트
+        console.log(`[Orchestrator] 🧪 Epic ${currentEpicOrder} 단위 테스트 시작`);
+        const epicTestResult = await this.runEpicTest({
+          projectId,
+          project,
+          epicStoryOutput,
+          currentEpicOrder,
+        });
+
+        if (epicTestResult.pass) {
+          console.log(`[Orchestrator] ✅ Epic ${currentEpicOrder} 단위 테스트 PASS`);
+          epicCompleted = true;
+        } else {
+          console.log(`[Orchestrator] ❌ Epic ${currentEpicOrder} 단위 테스트 FAIL`);
+          console.log(`[Orchestrator] 실패 사유: ${epicTestResult.reason}`);
+
+          // Scrum Master가 대응 Task 생성
+          await this.generateFixTasks({
+            projectId,
+            project,
+            epicStoryOutput,
+            selectedPRD,
+            testResult: epicTestResult,
+            testType: 'epic',
+            epicOrder: currentEpicOrder,
+          });
+
+          epicRetryCount++;
+          console.log(`[Orchestrator] Epic ${currentEpicOrder} 재시도 ${epicRetryCount}/${maxEpicRetries}`);
+
+          if (epicRetryCount >= maxEpicRetries) {
+            throw new Error(`Epic ${currentEpicOrder} 단위 테스트 ${maxEpicRetries}회 실패로 중단`);
+          }
+
+          // 잠시 대기 후 재시도
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+
+      currentEpicOrder++;
+    }
+
+    // 모든 Epic 완료 후 통합 테스트
+    console.log('[Orchestrator] 🧪 모든 Epic 완료. 통합 테스트 시작');
+    let integrationTestPassed = false;
+    let integrationRetryCount = 0;
+    const maxIntegrationRetries = 5;
+
+    while (!integrationTestPassed && integrationRetryCount < maxIntegrationRetries) {
+      const integrationTestResult = await this.runIntegrationTest({
+        projectId,
+        project,
+        epicStoryOutput,
+      });
+
+      if (integrationTestResult.pass) {
+        console.log('[Orchestrator] ✅ 통합 테스트 PASS');
+        integrationTestPassed = true;
+      } else {
+        console.log('[Orchestrator] ❌ 통합 테스트 FAIL');
+        console.log(`[Orchestrator] 실패 사유: ${integrationTestResult.reason}`);
+
+        // Scrum Master가 대응 Task 생성
+        await this.generateFixTasks({
+          projectId,
+          project,
+          epicStoryOutput,
+          selectedPRD,
+          testResult: integrationTestResult,
+          testType: 'integration',
+        });
+
+        integrationRetryCount++;
+        console.log(`[Orchestrator] 통합 테스트 재시도 ${integrationRetryCount}/${maxIntegrationRetries}`);
+
+        if (integrationRetryCount >= maxIntegrationRetries) {
+          throw new Error(`통합 테스트 ${maxIntegrationRetries}회 실패로 중단`);
+        }
+
+        // 대응 Task 개발
+        await this.runDevelopmentLoop({
+          projectId,
+          project,
+          epicStoryOutput,
+          selectedPRD,
+          currentEpicOrder: -1, // -1 = 모든 Epic 대상
+        });
+
+        // 잠시 대기 후 재시도
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+
+    console.log('[Orchestrator] 🎉 모든 개발 및 테스트 완료!');
+    return {
+      status: 'COMPLETED',
+      phase: 'all-complete',
+    };
+  }
+
+  /**
+   * Developer → Code Reviewer → Tester 순환 루프
+   * 현재 Epic의 모든 Task가 완료될 때까지 실행
+   */
+  public async runDevelopmentLoop(params: {
+    projectId: string;
+    project: any;
+    epicStoryOutput: any;
+    selectedPRD: any;
+    currentEpicOrder: number;
+  }): Promise<{ success: boolean; tasksCompleted: number }> {
+    const { projectId, project, epicStoryOutput, selectedPRD, currentEpicOrder } = params;
+
+    // 활성 개발 루프로 등록
+    this.activeDevelopmentLoops.add(projectId);
+    console.log(`[Orchestrator] 🔄 Development loop started for ${projectId}, active loops: ${this.activeDevelopmentLoops.size}`);
+
+    try {
+      let tasksCompleted = 0;
+      let maxIterations = 100; // 무한 루프 방지
+      let iteration = 0;
+
+      // 작업별 재시도 횟수 추적
+      const taskRetryCount = new Map<string, number>();
+      const MAX_TASK_RETRIES = 3;
+
+      while (iteration < maxIterations) {
+      iteration++;
+
+      // 일시정지 상태 확인 및 대기
+      await this.waitForResume(projectId);
+
+      // Scrum Master 실행 결과 로드
+      const scrumMasterExec = await prisma.agentExecution.findFirst({
+        where: { projectId, agentId: 'scrum-master' },
+        orderBy: { startedAt: 'desc' },
+      });
+
+      if (!scrumMasterExec || !scrumMasterExec.output) {
+        throw new Error('Scrum Master 결과를 찾을 수 없습니다');
+      }
+
+      const scrumMasterOutput = scrumMasterExec.output as any;
+
+      // 현재 Epic의 pending Task 찾기 (currentEpicOrder가 -1이면 모든 Epic)
+      const pendingTasks = scrumMasterOutput.tasks?.filter((t: any) => {
+        if (t.status !== 'pending') return false;
+        if (currentEpicOrder === -1) return true; // 모든 Epic 대상
+        return t.epicOrder === currentEpicOrder;
+      }) || [];
+
+      // 완료된 Task 확인
+      const completedTasks = scrumMasterOutput.tasks?.filter((t: any) => {
+        if (t.status !== 'completed') return false;
+        if (currentEpicOrder === -1) return true;
+        return t.epicOrder === currentEpicOrder;
+      }) || [];
+
+      // 모든 Task가 완료된 경우
+      if (pendingTasks.length === 0) {
+        console.log(`[Orchestrator] ✅ All ${completedTasks.length} tasks completed for Epic ${currentEpicOrder}`);
+        this.activeDevelopmentLoops.delete(projectId);
+        console.log(`[Orchestrator] 🔄 Development loop completed for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
+        return { success: true, tasksCompleted: completedTasks.length };
+      }
+
+      console.log(`[Orchestrator] Iteration ${iteration}: ${pendingTasks.length} pending tasks (Epic ${currentEpicOrder})`);
+
+      // 첫 번째 pending Task 실행
+      const task = pendingTasks[0];
+      const retryCount = taskRetryCount.get(task.id) || 0;
+
+      // 최대 재시도 횟수 초과 확인
+      if (retryCount >= MAX_TASK_RETRIES) {
+        console.error(`[Orchestrator] ❌ Task ${task.id} 최대 재시도 횟수(${MAX_TASK_RETRIES}) 초과로 영구 실패 처리`);
+        await this.updateTaskStatus(projectId, task.id, 'failed');
+        continue;
+      }
+
+      // Developer 실행
+      console.log(`[Orchestrator] 📝 Developer: Task ${task.id} - ${task.title} (시도 ${retryCount + 1}/${MAX_TASK_RETRIES + 1})`);
+
+      let developerResult;
+      try {
+        developerResult = await this.runAgent('developer', projectId, {
+          projectId,
+          project: {
+            name: project.name,
+            description: project.description,
+            wizardLevel: project.wizardLevel,
+          },
+          epicStory: epicStoryOutput,
+          scrumMaster: scrumMasterOutput,
+          selectedPRD,
+        });
+      } catch (error: any) {
+        console.log(`[Orchestrator] ⚠️ Developer 실패: ${error.message}`);
+        console.log('[Orchestrator] 🔄 Task를 다시 시도를 위해 pending 상태로 유지');
+        taskRetryCount.set(task.id, retryCount + 1);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      if (developerResult.status !== 'COMPLETED') {
+        console.log('[Orchestrator] ⚠️ Developer 상태가 COMPLETED가 아님, 다음 Task로 이동');
+        taskRetryCount.set(task.id, retryCount + 1);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      // Developer 성공 시 재시도 횟수 초기화
+      taskRetryCount.delete(task.id);
+
+      // Code Reviewer 실행
+      console.log(`[Orchestrator] 🔍 Code Reviewer: Task ${task.id}`);
+      const reviewerResult = await this.runAgent('code-reviewer', projectId, {
+        projectId,
+        project: {
+          name: project.name,
+          description: project.description,
+          wizardLevel: project.wizardLevel,
+        },
+      });
+
+      // ✅ 엄격한 상태 확인
+      if (reviewerResult.status !== 'COMPLETED') {
+        const errorMsg = `Code Reviewer 실행 실패 (status: ${reviewerResult.status})`;
+        console.log(`[Orchestrator] ❌ ${errorMsg}`);
+        taskRetryCount.set(task.id, retryCount + 1);
+        await this.updateTaskStatus(projectId, task.id, 'pending');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      const reviewOutput = reviewerResult.output || {};
+      if (reviewOutput.reviewResult === 'fail') {
+        console.log('[Orchestrator] ❌ Code Review FAIL - marking task for retry');
+        taskRetryCount.set(task.id, retryCount + 1);
+        await this.updateTaskStatus(projectId, task.id, 'pending'); // Reset to pending
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      // ✅ Code Reviewer 결과가 DB에 저장될 때까지 대기
+      console.log('[Orchestrator] ⏳ Waiting for Code Reviewer result to be saved to DB...');
+      await this.waitForAgentResultInDB(projectId, 'code-reviewer');
+      console.log('[Orchestrator] ✅ Code Reviewer result confirmed in DB');
+
+      // Tester 실행
+      console.log(`[Orchestrator] 🧪 Tester: Task ${task.id}`);
+      const testerResult = await this.runAgent('tester', projectId, {
+        projectId,
+        project: {
+          name: project.name,
+          description: project.description,
+          wizardLevel: project.wizardLevel,
+        },
+      });
+
+      if (testerResult.status !== 'COMPLETED') {
+        console.log('[Orchestrator] ⚠️ Tester failed, continuing anyway');
+      }
+
+      const testOutput = testerResult.output || {};
+      if (testOutput.testResult === 'fail') {
+        console.log('[Orchestrator] ❌ Test FAIL - marking task for retry');
+        await this.updateTaskStatus(projectId, task.id, 'pending'); // Reset to pending
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      // 모두 통과하면 Task 완료
+      console.log(`[Orchestrator] ✅ Task ${task.id} completed (Dev + Review + Test PASS)`);
+      tasksCompleted++;
+
+      // 잠시 대기
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    console.log(`[Orchestrator] ⚠️ Reached max iterations (${maxIterations})`);
+    this.activeDevelopmentLoops.delete(projectId);
+    console.log(`[Orchestrator] 🔄 Development loop ended for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
+    return { success: false, tasksCompleted };
+  } catch (error) {
+    console.error(`[Orchestrator] ❌ Development loop error for ${projectId}:`, error);
+    this.activeDevelopmentLoops.delete(projectId);
+    console.log(`[Orchestrator] 🔄 Development loop error cleanup for ${projectId}, remaining active loops: ${this.activeDevelopmentLoops.size}`);
+    throw error;
+  }
+  }
+
+  /**
+   * Epic 단위 테스트 실행
+   */
+  private async runEpicTest(params: {
+    projectId: string;
+    project: any;
+    epicStoryOutput: any;
+    currentEpicOrder: number;
+  }): Promise<{ pass: boolean; reason?: string }> {
+    const { projectId, project, epicStoryOutput, currentEpicOrder } = params;
+
+    const currentEpic = epicStoryOutput.epics[currentEpicOrder - 1];
+
+    // Tester Agent에게 Epic 단위 테스트 요청
+    const testerResult = await this.runAgent('tester', projectId, {
+      projectId,
+      project: {
+        name: project.name,
+        description: project.description,
+        wizardLevel: project.wizardLevel,
+      },
+      testScope: {
+        type: 'epic',
+        epicOrder: currentEpicOrder,
+        epicTitle: currentEpic.title,
+      },
+    });
+
+    if (testerResult.status !== 'COMPLETED') {
+      return {
+        pass: false,
+        reason: 'Tester Agent 실행 실패',
+      };
+    }
+
+    const output = testerResult.output || {};
+
+    // Scrum Master에 Epic 테스트 결과 저장
+    await this.updateScrumMasterEpicTestResult(projectId, currentEpicOrder, output);
+
+    return {
+      pass: output.testResult === 'pass',
+      reason: output.failureReason || '테스트 실패',
+    };
+  }
+
+  /**
+   * 통합 테스트 실행
+   */
+  private async runIntegrationTest(params: {
+    projectId: string;
+    project: any;
+    epicStoryOutput: any;
+  }): Promise<{ pass: boolean; reason?: string }> {
+    const { projectId, project, epicStoryOutput } = params;
+
+    // Tester Agent에게 통합 테스트 요청
+    const testerResult = await this.runAgent('tester', projectId, {
+      projectId,
+      project: {
+        name: project.name,
+        description: project.description,
+        wizardLevel: project.wizardLevel,
+      },
+      testScope: {
+        type: 'integration',
+        totalEpics: epicStoryOutput.epics.length,
+      },
+    });
+
+    if (testerResult.status !== 'COMPLETED') {
+      return {
+        pass: false,
+        reason: 'Tester Agent 실행 실패',
+      };
+    }
+
+    const output = testerResult.output || {};
+
+    // Scrum Master에 통합 테스트 결과 저장
+    await this.updateScrumMasterIntegrationTestResult(projectId, output);
+
+    return {
+      pass: output.testResult === 'pass',
+      reason: output.failureReason || '테스트 실패',
+    };
+  }
+
+  /**
+   * 실패 시 Scrum Master가 대응 Task 생성
+   */
+  private async generateFixTasks(params: {
+    projectId: string;
+    project: any;
+    epicStoryOutput: any;
+    selectedPRD: any;
+    testResult: any;
+    testType: 'epic' | 'integration';
+    epicOrder?: number;
+  }): Promise<void> {
+    const { projectId, project, epicStoryOutput, selectedPRD, testResult, testType, epicOrder } = params;
+
+    console.log(`[Orchestrator] 🔧 Scrum Master: 대응 Task 생성 (${testType} test fail)`);
+
+    // Scrum Master에게 실패 분석 및 대응 Task 생성 요청
+    const scrumMasterResult = await this.runAgent('scrum-master', projectId, {
+      projectId,
+      project: {
+        name: project.name,
+        description: project.description,
+        wizardLevel: project.wizardLevel,
+      },
+      epicStory: epicStoryOutput,
+      selectedPRD,
+      failureContext: {
+        type: testType,
+        epicOrder,
+        testResult,
+      },
+    });
+
+    if (scrumMasterResult.status !== 'COMPLETED') {
+      throw new Error('Scrum Master 대응 Task 생성 실패');
+    }
+
+    console.log('[Orchestrator] ✅ 대응 Task 생성 완료');
+  }
+
+  /**
+   * Task 상태 업데이트
+   */
+  private async updateTaskStatus(projectId: string, taskId: string, status: string): Promise<void> {
+    const scrumMasterExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'scrum-master' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (!scrumMasterExec || !scrumMasterExec.output) return;
+
+    const output = scrumMasterExec.output as any;
+    const task = output.tasks?.find((t: any) => t.id === taskId);
+
+    if (task) {
+      task.status = status;
+      await prisma.agentExecution.update({
+        where: { id: scrumMasterExec.id },
+        data: { output: output as any },
+      });
+    }
+  }
+
+  /**
+   * Scrum Master에 Epic 테스트 결과 저장
+   */
+  private async updateScrumMasterEpicTestResult(
+    projectId: string,
+    epicOrder: number,
+    testResult: any
+  ): Promise<void> {
+    const scrumMasterExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'scrum-master' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (!scrumMasterExec || !scrumMasterExec.output) return;
+
+    const output = scrumMasterExec.output as any;
+    output.epicTestResult = {
+      epicOrder,
+      result: testResult.testResult || 'fail',
+      testDate: new Date().toISOString(),
+      failures: testResult.failures || [],
+    };
+
+    await prisma.agentExecution.update({
+      where: { id: scrumMasterExec.id },
+      data: { output: output as any },
+    });
+  }
+
+  /**
+   * Agent 실행 결과가 DB에 저장될 때까지 대기
+   */
+  private async waitForAgentResultInDB(
+    projectId: string,
+    agentId: string,
+    maxWaitMs: number = 10000
+  ): Promise<void> {
+    const startTime = Date.now();
+    const checkInterval = 500; // 0.5초마다 확인
+
+    while (Date.now() - startTime < maxWaitMs) {
+      const execution = await prisma.agentExecution.findFirst({
+        where: {
+          projectId,
+          agentId,
+        },
+        orderBy: {
+          startedAt: 'desc',
+        },
+      });
+
+      if (execution && execution.output) {
+        // 결과가 DB에 저장됨
+        return;
+      }
+
+      // 결과가 아직 없으면 대기 후 재시도
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+
+    throw new Error(`${agentId} 결과가 ${maxWaitMs}ms 동안 DB에 저장되지 않았습니다`);
+  }
+
+  /**
+   * Scrum Master에 통합 테스트 결과 저장
+   */
+  private async updateScrumMasterIntegrationTestResult(projectId: string, testResult: any): Promise<void> {
+    const scrumMasterExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'scrum-master' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (!scrumMasterExec || !scrumMasterExec.output) return;
+
+    const output = scrumMasterExec.output as any;
+    output.integrationTestResult = {
+      result: testResult.testResult || 'fail',
+      testDate: new Date().toISOString(),
+      failures: testResult.failures || [],
+    };
+
+    await prisma.agentExecution.update({
+      where: { id: scrumMasterExec.id },
+      data: { output: output as any },
+    });
   }
 }
 

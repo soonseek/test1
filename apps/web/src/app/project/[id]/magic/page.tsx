@@ -266,10 +266,14 @@ export default function MagicPage() {
     console.log('[Magic Page] Starting development workflow...');
 
     try {
-      // Scrum Master 에이전트 시작
-      await fetch(`http://localhost:4000/api/magic/restart/${projectId}/scrum-master`, {
+      // 개발 루프 시작
+      await fetch(`http://localhost:4000/api/magic/start-development`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
       });
+
+      console.log('[Magic Page] Development phase started');
 
       // 개발 탭으로 전환
       setActiveTab('development');
@@ -280,11 +284,49 @@ export default function MagicPage() {
     }
   };
 
+  // 개발 일시정지
+  const pauseDevelopment = async () => {
+    console.log('[Magic Page] Pausing development...');
+
+    try {
+      await fetch(`http://localhost:4000/api/magic/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+
+      console.log('[Magic Page] Development paused');
+      await fetchStatus();
+    } catch (error) {
+      console.error('[Magic Page] Failed to pause development:', error);
+      alert('일시정지 실패');
+    }
+  };
+
+  // 개발 재개
+  const resumeDevelopment = async () => {
+    console.log('[Magic Page] Resuming development...');
+
+    try {
+      await fetch(`http://localhost:4000/api/magic/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+
+      console.log('[Magic Page] Development resumed');
+      await fetchStatus();
+    } catch (error) {
+      console.error('[Magic Page] Failed to resume development:', error);
+      alert('재개 실패');
+    }
+  };
+
   const tabs = [
     { id: 'overview' as AgentTab, label: '전체 보기', icon: '📊' },
     { id: 'requirement' as AgentTab, label: '요구사항 분석', icon: '✨', agentId: 'requirement-analyzer' },
     { id: 'epic-story' as AgentTab, label: 'Epic & Story', icon: '📄', agentId: 'epic-story' },
-    { id: 'development' as AgentTab, label: '개발', icon: '💻' },
+    { id: 'development' as AgentTab, label: '개발', icon: '💻', agentIds: ['scrum-master', 'developer', 'code-reviewer', 'tester'] },
     { id: 'debugging' as AgentTab, label: '디버깅', icon: '🐛' },
     { id: 'feature-addition' as AgentTab, label: '기능추가', icon: '➕' },
     { id: 'errors' as AgentTab, label: '에러 기록', icon: '❌' },
@@ -379,9 +421,34 @@ export default function MagicPage() {
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex gap-2 py-3">
             {tabs.map(tab => {
-              const executions = tab.agentId ? getAgentExecutions(tab.agentId) : [];
+              const executions = tab.agentId ? getAgentExecutions(tab.agentId) :
+                                  tab.agentIds ? tab.agentIds.flatMap(id => getAgentExecutions(id)) : [];
               const lastExecution = executions[0];
               const isActive = activeTab === tab.id;
+
+              // 개발 탭인 경우 실행 중인 에이전트 확인
+              const isDevelopmentTab = tab.id === 'development';
+              const hasRunningAgent = isDevelopmentTab && executions.some((e: any) => e.status === 'RUNNING');
+
+              // 개발 탭 상태 판단
+              let developmentStatus: 'running' | 'completed' | 'paused' | 'pending' | null = null;
+              if (isDevelopmentTab) {
+                // Scrum Master 실행 결과 확인
+                const scrumMasterExec = agentExecutions.find((e: any) => e.agentId === 'scrum-master' && e.status === 'COMPLETED');
+                const hasCompletedTasks = scrumMasterExec?.output?.tasks?.some((t: any) => t.status === 'completed');
+                const hasPendingTasks = scrumMasterExec?.output?.tasks?.some((t: any) => t.status === 'pending');
+                const allTasksCompleted = scrumMasterExec?.output?.tasks?.every((t: any) => t.status === 'completed');
+
+                if (hasRunningAgent) {
+                  developmentStatus = 'running';
+                } else if (allTasksCompleted) {
+                  developmentStatus = 'completed';
+                } else if (hasCompletedTasks && hasPendingTasks) {
+                  developmentStatus = 'paused';
+                } else if (hasPendingTasks) {
+                  developmentStatus = 'pending';
+                }
+              }
 
               return (
                 <button
@@ -395,7 +462,24 @@ export default function MagicPage() {
                 >
                   <span className="text-lg">{tab.icon}</span>
                   <span className="text-sm font-display font-semibold">{tab.label}</span>
-                  {tab.agentId && lastExecution && (
+
+                  {/* 개발 탭: Spinner 표시 (실행 중) */}
+                  {isDevelopmentTab && developmentStatus === 'running' && (
+                    <div className="w-4 h-4 border-2 border-vivid-purple/30 border-t-vivid-purple rounded-full animate-spin"></div>
+                  )}
+
+                  {/* 개발 탭: 완료 표시 (모든 Task 완료) */}
+                  {isDevelopmentTab && developmentStatus === 'completed' && (
+                    <span className="text-xs text-green-400">✓</span>
+                  )}
+
+                  {/* 개발 탭: 중단 표시 (일부만 완료) */}
+                  {isDevelopmentTab && developmentStatus === 'paused' && (
+                    <span className="text-xs text-orange-400" title="개발 중단 (이어서 진행 가능)">⏸️</span>
+                  )}
+
+                  {/* 다른 탭: 상태 아이콘 */}
+                  {!isDevelopmentTab && tab.agentId && lastExecution && (
                     <span className={`text-xs ${getStatusColor(lastExecution.status)}`}>
                       {lastExecution.status === 'COMPLETED' && '✓'}
                       {lastExecution.status === 'RUNNING' && '⏳'}
@@ -538,6 +622,8 @@ export default function MagicPage() {
             projectId={projectId}
             currentActivity={currentActivity}
             onStartDevelopment={startDevelopment}
+            onPauseDevelopment={pauseDevelopment}
+            onResumeDevelopment={resumeDevelopment}
           />
         )}
 
@@ -549,6 +635,8 @@ export default function MagicPage() {
             projectId={projectId}
             currentActivity={currentActivity}
             onStartDevelopment={startDevelopment}
+            onPauseDevelopment={pauseDevelopment}
+            onResumeDevelopment={resumeDevelopment}
           />
         )}
 

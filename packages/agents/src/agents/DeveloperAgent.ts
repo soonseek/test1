@@ -79,50 +79,61 @@ export class DeveloperAgent extends Agent {
       projectId: input.projectId,
     });
 
+    // 1. Scrum Master가 생성한 Task List 로드
+    const scrumMasterOutput = await this.getScrumMasterOutput(input.projectId);
+
+    if (!scrumMasterOutput) {
+      await this.logError(new Error('Scrum Master 실행 결과를 찾을 수 없습니다'));
+      return {
+        status: AgentStatus.FAILED,
+        error: {
+          message: 'Scrum Master 실행 결과를 찾을 수 없습니다',
+          retryable: false,
+        },
+      };
+    }
+
+    await this.log('Task List 로드 완료', {
+      totalTasks: scrumMasterOutput.tasks.length,
+    });
+
+    // 2. 진행할 Task 선택 (pending 상태인 첫 번째 task)
+    const pendingTask = scrumMasterOutput.tasks.find((t: any) => t.status === 'pending');
+
+    if (!pendingTask) {
+      await this.log('모든 Task가 완료됨');
+      return {
+        status: AgentStatus.COMPLETED,
+        output: {
+          currentPhase: 'completed',
+          completedTasks: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
+          generatedFiles: [],
+          changes: [],
+          summary: {
+            totalTasksCompleted: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').length,
+            filesCreated: 0,
+            filesModified: 0,
+          },
+        } as DeveloperOutput,
+      };
+    }
+
+    await this.log('Task 개발 시작', {
+      taskId: pendingTask.id,
+      title: pendingTask.title,
+    });
+
+    // 3. PRD와 Story 정보 로드
+    const prd = await this.getPRD(input.projectId);
+    const story = await this.getStory(input.projectId, pendingTask.storyId);
+
+    // 4. 개발 수행 (에러 처리 포함)
+    let result: DeveloperOutput;
+    let taskSuccess = false;
+
     try {
-      // 1. Scrum Master가 생성한 Task List 로드
-      const scrumMasterOutput = await this.getScrumMasterOutput(input.projectId);
-
-      if (!scrumMasterOutput) {
-        throw new Error('Scrum Master 실행 결과를 찾을 수 없습니다');
-      }
-
-      await this.log('Task List 로드 완료', {
-        totalTasks: scrumMasterOutput.tasks.length,
-      });
-
-      // 2. 진행할 Task 선택 (pending 상태인 첫 번째 task)
-      const pendingTask = scrumMasterOutput.tasks.find((t: any) => t.status === 'pending');
-
-      if (!pendingTask) {
-        await this.log('모든 Task가 완료됨');
-        return {
-          status: AgentStatus.COMPLETED,
-          output: {
-            currentPhase: 'completed',
-            completedTasks: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
-            generatedFiles: [],
-            changes: [],
-            summary: {
-              totalTasksCompleted: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').length,
-              filesCreated: 0,
-              filesModified: 0,
-            },
-          } as DeveloperOutput,
-        };
-      }
-
-      await this.log('Task 개발 시작', {
-        taskId: pendingTask.id,
-        title: pendingTask.title,
-      });
-
-      // 3. PRD와 Story 정보 로드
-      const prd = await this.getPRD(input.projectId);
-      const story = await this.getStory(input.projectId, pendingTask.storyId);
-
-      // 4. 개발 수행
-      const result = await this.performTask(pendingTask, prd, story, scrumMasterOutput, input);
+      result = await this.performTask(pendingTask, prd, story, scrumMasterOutput, input);
+      taskSuccess = true;
 
       await this.log('Task 개발 완료', {
         taskId: pendingTask.id,
@@ -130,19 +141,42 @@ export class DeveloperAgent extends Agent {
         filesModified: result.summary.filesModified,
       });
 
+      // 5. Scrum Master의 Task 상태 업데이트 (성공)
+      await this.updateTaskStatus(input.projectId, pendingTask.id, 'completed');
+
       return {
         status: AgentStatus.COMPLETED,
         output: result,
       };
     } catch (error: any) {
-      await this.logError(error);
+      await this.logError(error as Error);
+
+      // Task 실패 상태로 업데이트하지만 COMPLETED로 반환하여 다음 Task 진행
+      await this.updateTaskStatus(input.projectId, pendingTask.id, 'failed');
+
+      await this.log('Task 실패로 표시하고 다음 Task 진행', {
+        taskId: pendingTask.id,
+        error: error.message,
+      });
+
+      // 실패해도 COMPLETED로 반환하여 루프 계속
       return {
-        status: AgentStatus.FAILED,
-        error: {
-          message: error.message,
-          stackTrace: error.stack,
-          retryable: this.isRetryable(error),
-        },
+        status: AgentStatus.COMPLETED,
+        output: {
+          currentPhase: 'development',
+          completedTasks: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
+          generatedFiles: [],
+          changes: [],
+          summary: {
+            totalTasksCompleted: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').length,
+            filesCreated: 0,
+            filesModified: 0,
+          },
+          error: {
+            taskId: pendingTask.id,
+            message: error.message,
+          },
+        } as DeveloperOutput,
       };
     }
   }
@@ -216,23 +250,70 @@ export class DeveloperAgent extends Agent {
     // 프롬프트 빌드
     const prompt = this.buildDevelopmentPrompt(task, prd, story, scrumMasterOutput);
 
-    // LLM을 통한 코드 생성
-    const response = await this.anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 16384,
-      temperature: 0.3,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    });
+    // LLM 응답 재시도 로직 (최대 3회)
+    let lastError: Error | null = null;
+    let generatedFiles: any[] = [];
+    let changes: any[] = [];
+    let success = false;
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await this.log(`LLM 코드 생성 시도 ${attempt}/3`, {
+        taskId: task.id,
+      });
 
-    // 생성된 코드 파싱 및 파일 작성
-    const { generatedFiles, changes } = await this.parseAndWriteCode(text, task, input);
+      try {
+        // LLM을 통한 코드 생성
+        const response = await this.anthropic.messages.create({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 16384,
+          temperature: 0.3,
+          messages: [
+            {
+              role: 'user',
+              content: attempt > 1 ? `${prompt}\n\n**중요**: 반드시 ## 파일: 경로 형식으로 코드를 생성해주세요.` : prompt,
+            },
+          ],
+        });
+
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+
+        // 생성된 코드 파싱 및 파일 작성
+        const result = await this.parseAndWriteCode(text, task, input);
+        generatedFiles = result.generatedFiles;
+        changes = result.changes;
+
+        // 파일이 하나라도 생성되었는지 확인
+        if (generatedFiles.length > 0 || changes.length > 0) {
+          success = true;
+          await this.log(`LLM 코드 생성 성공 (시도 ${attempt})`, {
+            taskId: task.id,
+            filesCreated: generatedFiles.length,
+            filesModified: changes.length,
+          });
+          break;
+        } else {
+          await this.log(`LLM 응답에서 파일을 찾지 못함 (시도 ${attempt})`, {
+            taskId: task.id,
+            responseLength: text.length,
+          });
+          lastError = new Error(`시도 ${attempt}: LLM이 파일을 생성하지 않았습니다`);
+        }
+      } catch (error: any) {
+        await this.logError(error as Error);
+        lastError = error;
+      }
+
+      // 마지막 시도가 아니면 잠시 대기
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    // 모든 시도가 실패한 경우
+    if (!success || lastError) {
+      await this.logError(lastError || new Error('코드 생성 실패'));
+      throw new Error(`Task "${task.title}" 개발 실패: LLM이 3회 시도 후에도 파일을 생성하지 않았습니다. ${lastError?.message || ''}`);
+    }
 
     // Task 상태 업데이트
     const completedTasks = [
@@ -265,6 +346,22 @@ export class DeveloperAgent extends Agent {
 당신은 Next.js 14+ Full-Stack 개발자입니다.
 할당된 Task를 수행하고 필요한 코드를 생성해주세요.
 
+## ⚠️ 중요: 파일 경로 지정
+
+**절대 지켜야 할 규칙:**
+1. 프로젝트 루트는 이미 설정되어 있습니다
+2. **절대 경로를 지정하지 마세요** (예: /projects/, ./projects/)
+3. **상대 경로만 사용하세요** (예: apps/web/src/app/page.tsx)
+4. **'projects/' 폴더를 경로 접두어로 사용하지 마세요**
+5. 모든 경로는 apps/ 또는 docs/로 시작해야 합니다
+
+**올바른 경로 예시:**
+- ✅ apps/web/src/app/page.tsx
+- ✅ apps/api/src/routes/auth.ts
+- ✅ docs/development-plan.md
+- ❌ projects/xxx/apps/web/src/app/page.tsx
+- ❌ /projects/xxx/apps/web/src/app/page.tsx
+
 ## Task 정보
 
 **Task ID**: ${task.id}
@@ -294,21 +391,20 @@ ${prdContent.substring(0, 8000)}
 
 ## 프로젝트 구조
 
-생성되는 코드는 /projects/${projectId}/ 디렉토리에 저장됩니다:
+생성되는 코드는 프로젝트 루트의 하위 디렉토리에 저장됩니다:
 
 \`\`\`
-projects/${projectId}/
-  apps/
-    web/              # Frontend (Next.js App Router)
-      src/
-        app/          # App Router pages
-        components/   # React components
-        lib/          # Utilities
-    api/              # Backend (Next.js API Routes)
-      src/
-        routes/       # API routes
-        lib/          # Utilities
-  docs/               # Documentation (PRD, Epic, Story)
+apps/
+  web/              # Frontend (Next.js App Router)
+    src/
+      app/          # App Router pages
+      components/   # React components
+      lib/          # Utilities
+  api/              # Backend (Next.js API Routes)
+    src/
+      routes/       # API routes
+      lib/          # Utilities
+docs/               # Documentation (PRD, Epic, Story)
 \`\`\`
 
 ## 코드 생성 가이드
@@ -341,6 +437,40 @@ import { NextRequest, NextResponse } from 'next/server';
 \`\`\`
 \`\`\`
 
+## ⚠️ 필수 준수 사항
+
+**반드시 지켜야 할 규칙:**
+1. 모든 파일은 **## 파일: [경로]** 헤더로 시작
+2. 코드는 **\`\`\`typescript** 또는 **\`\`\`tsx**로 감싸기
+3. import 문 포함
+4. 실제로 작동하는 완전한 코드
+
+**❌ 절대 하지 말 것:**
+- 코드 없이 설명만 작성
+- "코드는 다음과 같습니다:"라 말만 하고 실제 코드 없음
+- 코드가 \`\`\`로 감싸지 않음
+- ## 파일: 헤더 없이 바로 코드 시작
+
+**✅ 올바른 예시:**
+\`\`\`markdown
+## 파일: apps/web/src/app/page.tsx
+
+\`\`\`typescript
+'use client';
+
+import { useState } from 'react';
+
+export default function Home() {
+  return <div>Hello</div>;
+}
+\`\`\`
+\`\`\`
+
+**❌ 잘못된 예시:**
+- 파일 생성합니다: apps/web/src/app/page.tsx (코드 없음)
+- 다음 파일을 만듭니다: (코드 없음)
+- ## 파일: projects/xxx/apps/web/src/app/page.tsx (경로 오류)
+
 중요:
 - 실제로 작동하는 완전한 코드를 생성하세요
 - import 문을 포함하세요
@@ -361,11 +491,50 @@ import { NextRequest, NextResponse } from 'next/server';
     // 프로젝트 디렉토리 경로
     const projectDir = this.getProjectDir(input.projectId);
 
-    // 파일 블록 추출
-    const fileBlocks = text.match(/## 파일: (.+?)\n\n```[\s\S]*?```/g);
+    // LLM 응답이 비어있거나 너무 짧은 경우 처리
+    if (!text || text.trim().length < 50) {
+      await this.log('LLM 응답이 비어있거나 너무 짧음', {
+        taskId: task.id,
+        responseLength: text?.length || 0,
+      });
+      return { generatedFiles, changes };
+    }
 
-    if (!fileBlocks) {
-      throw new Error('생성된 코드에서 파일 블록을 찾을 수 없습니다');
+    // 파일 블록 추출 - 여러 형식 시도
+    let fileBlocks = text.match(/## 파일: (.+?)\n\n```[\s\S]*?```/g);
+
+    // 첫 번째 정규식 실패 시 대체 형식 시도
+    if (!fileBlocks || fileBlocks.length === 0) {
+      await this.log('첫 번째 형식 매칭 실패, 대체 형식 시도', {
+        taskId: task.id,
+      });
+
+      // 대체 형식 1: ## 파일: ... ```typescript``` (줄바꿈 없음)
+      fileBlocks = text.match(/## 파일: (.+?)\n```[\s\S]*?```/g);
+    }
+
+    if (!fileBlocks || fileBlocks.length === 0) {
+      await this.log('두 번째 형식도 실패, 세 번째 형식 시도', {
+        taskId: task.id,
+      });
+
+      // 대체 형식 2: ```[typescript] ... ``` (파일 헤더 없음)
+      fileBlocks = text.match(/```(?:typescript|tsx|ts|js)\n([\s\S]*?)```/g);
+
+      if (fileBlocks && fileBlocks.length > 0) {
+        await this.log('세 번째 형식으로 파일 블록 추출 성공', {
+          taskId: task.id,
+          blockCount: fileBlocks.length,
+        });
+      }
+    }
+
+    if (!fileBlocks || fileBlocks.length === 0) {
+      await this.log('생성된 코드에서 파일 블록을 찾을 수 없음', {
+        taskId: task.id,
+        responsePreview: text.substring(0, 200),
+      });
+      return { generatedFiles, changes };
     }
 
     for (const block of fileBlocks) {
@@ -488,6 +657,49 @@ import { NextRequest, NextResponse } from 'next/server';
       }
     } catch (error) {
       console.error('[Developer] Failed to update progress:', error);
+    }
+  }
+
+  private async updateTaskStatus(projectId: string, taskId: string, status: 'pending' | 'in-progress' | 'completed' | 'failed'): Promise<void> {
+    try {
+      // Scrum Master 실행 기록 찾기
+      const scrumMasterExec = await prisma.agentExecution.findFirst({
+        where: {
+          projectId,
+          agentId: 'scrum-master',
+        },
+        orderBy: {
+          startedAt: 'desc',
+        },
+      });
+
+      if (!scrumMasterExec || !scrumMasterExec.output) {
+        await this.log('Scrum Master 실행 결과를 찾을 수 없어 Task 상태 업데이트 불가');
+        return;
+      }
+
+      // Task 상태 업데이트
+      const output = scrumMasterExec.output as any;
+      const task = output.tasks?.find((t: any) => t.id === taskId);
+
+      if (task) {
+        task.status = status;
+
+        // 데이터베이스 업데이트
+        await prisma.agentExecution.update({
+          where: { id: scrumMasterExec.id },
+          data: {
+            output: output as any,
+          },
+        });
+
+        await this.log('Task 상태 업데이트 완료', {
+          taskId,
+          status,
+        });
+      }
+    } catch (error) {
+      await this.logError(error as Error);
     }
   }
 

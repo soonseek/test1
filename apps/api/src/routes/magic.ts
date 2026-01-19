@@ -117,6 +117,10 @@ router.get('/status/:projectId', async (req, res) => {
       });
     }
 
+    const orchestrator = getOrchestrator();
+    const isDevelopmentActive = orchestrator.isDevelopmentActive(projectId);
+    const isPaused = orchestrator.isPaused(projectId);
+
     // Agent 실행 상태 집계
     const agentStatus = {
       total: project.agentExecutions.length,
@@ -127,6 +131,7 @@ router.get('/status/:projectId', async (req, res) => {
     };
 
     console.log('[Magic API] Agent status:', agentStatus);
+    console.log('[Magic API] Development active:', isDevelopmentActive, 'Paused:', isPaused);
 
     res.json({
       projectId: project.id,
@@ -134,6 +139,10 @@ router.get('/status/:projectId', async (req, res) => {
       agentStatus,
       deployment: project.deployment,
       currentAgent: project.agentExecutions.find((e: any) => e.status === 'RUNNING'),
+      development: {
+        active: isDevelopmentActive,
+        paused: isPaused,
+      },
       overallStatus: agentStatus.running > 0 ? 'processing' :
                      agentStatus.failed > 0 ? 'failed' :
                      agentStatus.total === agentStatus.completed ? 'completed' : 'pending',
@@ -354,20 +363,28 @@ router.post('/restart/:projectId/:agentId', async (req, res) => {
 
     console.log('[Magic API] Calling orchestrator.runAgent...');
 
-    // 비동기 Agent 실행
-    orchestrator.runAgent(agentId, projectId, {
-      projectId,
-      project: {
-        name: project.name,
-        description: project.description,
-        wizardLevel: project.wizardLevel,
-      },
-      files: project.sessionFiles,
-      survey: project.surveyAnswer,
-      epicStory: epicStoryOutput, // Epic & Story 결과 추가
-    }).catch(error => {
-      console.error(`[Magic API] Agent execution failed for ${agentId}:`, error);
-    });
+    // Developer 에이전트인 경우 개발 단계 전체 실행
+    if (agentId === 'developer') {
+      console.log('[Magic API] Running full development phase...');
+      orchestrator.runDevelopmentPhase(projectId).catch(error => {
+        console.error('[Magic API] Development phase failed:', error);
+      });
+    } else {
+      // 비동기 Agent 실행
+      orchestrator.runAgent(agentId, projectId, {
+        projectId,
+        project: {
+          name: project.name,
+          description: project.description,
+          wizardLevel: project.wizardLevel,
+        },
+        files: project.sessionFiles,
+        survey: project.surveyAnswer,
+        epicStory: epicStoryOutput, // Epic & Story 결과 추가
+      }).catch(error => {
+        console.error(`[Magic API] Agent execution failed for ${agentId}:`, error);
+      });
+    }
 
     console.log(`[Magic API] Agent ${agentId} restart triggered`);
 
@@ -584,6 +601,309 @@ router.post('/deploy/:projectId', async (req, res) => {
     res.status(500).json({
       error: {
         message: 'Failed to deploy to Netlify',
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
+      },
+    });
+  }
+});
+
+// GET /api/magic/logs - 서버 로그 실시간 조회
+router.get('/logs', async (req, res) => {
+  try {
+    const { lines = 100 } = req.query;
+
+    // Claude Code가 작성한 백그라운드 태스크 출력 파일 경로
+    const fs = require('fs');
+    const path = require('path');
+
+    // 백그라운드 태스크 출력 파일이 있는 디렉토리 (고정 경로 사용)
+    const tasksDir = 'C:\\tmp\\claude\\tasks';
+
+    // 가장 최근의 출력 파일 찾기
+    let latestLogFile: string | null = null;
+    let latestTime = 0;
+
+    try {
+      if (fs.existsSync(tasksDir)) {
+        const files = fs.readdirSync(tasksDir);
+        files.forEach(file => {
+          if (file.endsWith('.output')) {
+            const filePath = path.join(tasksDir, file);
+            const stats = fs.statSync(filePath);
+            if (stats.mtimeMs > latestTime) {
+              latestTime = stats.mtimeMs;
+              latestLogFile = filePath;
+            }
+          }
+        });
+      }
+    } catch (error) {
+      console.error('[Magic API] Error reading tasks directory:', error);
+    }
+
+    if (!latestLogFile || !fs.existsSync(latestLogFile)) {
+      return res.json({
+        logs: ['서버 로그 파일을 찾을 수 없습니다. API 서버가 실행 중인지 확인해주세요.'],
+        lastModified: null,
+      });
+    }
+
+    // 로그 파일 읽기
+    const content = fs.readFileSync(latestLogFile, 'utf-8');
+    const logLines = content.split('\n');
+
+    // 요청한 라인 수만큼 반환 (기본값: 100)
+    const lineCount = parseInt(lines as string) || 100;
+    const requestedLines = logLines.slice(-lineCount);
+
+    res.json({
+      logs: requestedLines.filter(line => line.trim()),
+      lastModified: latestTime,
+      totalLines: logLines.length,
+    });
+  } catch (error: any) {
+    console.error('[Magic API] Error fetching logs:', error);
+    res.status(500).json({
+      error: {
+        message: 'Failed to fetch logs',
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
+      },
+    });
+  }
+});
+
+// POST /api/magic/pause - 개발 일시정지
+router.post('/pause', async (req, res) => {
+  try {
+    const { projectId } = req.body;
+
+    if (!projectId) {
+      return res.status(400).json({
+        error: { message: 'projectId is required' },
+      });
+    }
+
+    console.log('[Magic API] Pausing development for projectId:', projectId);
+
+    const orchestrator = getOrchestrator();
+    orchestrator.pauseDevelopment(projectId);
+
+    res.json({
+      message: 'Development paused',
+      projectId,
+      paused: true,
+    });
+  } catch (error: any) {
+    console.error('[Magic API] Error pausing development:', error);
+    res.status(500).json({
+      error: {
+        message: 'Failed to pause development',
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
+      },
+    });
+  }
+});
+
+// POST /api/magic/start-development - 개발 루프 시작
+router.post('/start-development', async (req, res) => {
+  try {
+    const { projectId } = req.body;
+
+    if (!projectId) {
+      return res.status(400).json({
+        error: { message: 'projectId is required' },
+      });
+    }
+
+    console.log('[Magic API] Starting development loop for projectId:', projectId);
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+    });
+
+    if (!project) {
+      return res.status(404).json({
+        error: { message: 'Project not found' },
+      });
+    }
+
+    const orchestrator = getOrchestrator();
+
+    // Epic Story와 Scrum Master 결과 로드
+    const epicStoryExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'epic-story' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    const scrumMasterExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'scrum-master' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (!epicStoryExec || !epicStoryExec.output) {
+      return res.status(400).json({
+        error: { message: 'Epic Story must be completed first' },
+      });
+    }
+
+    if (!scrumMasterExec || !scrumMasterExec.output) {
+      return res.status(400).json({
+        error: { message: 'Scrum Master must be completed first' },
+      });
+    }
+
+    // 비동기로 개발 루프 시작 (즉시 응답 전송)
+    orchestrator.runDevelopmentLoop({
+      projectId,
+      project: {
+        name: project.name,
+        description: project.description,
+        wizardLevel: project.wizardLevel,
+      },
+      epicStoryOutput: epicStoryExec.output,
+      selectedPRD: null, // PRD는 필요 없음
+      currentEpicOrder: -1, // 모든 Epic 대상
+    }).catch(error => {
+      console.error('[Magic API] Development loop error:', error);
+    });
+
+    res.json({
+      message: 'Development loop started',
+      projectId,
+      status: 'running',
+    });
+  } catch (error: any) {
+    console.error('[Magic API] Error starting development:', error);
+    res.status(500).json({
+      error: {
+        message: 'Failed to start development',
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
+      },
+    });
+  }
+});
+
+// POST /api/magic/resume - 개발 재개
+router.post('/resume', async (req, res) => {
+  try {
+    const { projectId } = req.body;
+
+    if (!projectId) {
+      return res.status(400).json({
+        error: { message: 'projectId is required' },
+      });
+    }
+
+    console.log('[Magic API] Resuming development for projectId:', projectId);
+
+    const orchestrator = getOrchestrator();
+
+    // 1. 일시정지 상태 해제
+    orchestrator.resumeDevelopment(projectId);
+
+    // 2. 실패한 작업을 다시 pending 상태로 변경
+    try {
+      const scrumMasterExec = await prisma.agentExecution.findFirst({
+        where: { projectId, agentId: 'scrum-master' },
+        orderBy: { startedAt: 'desc' },
+      });
+
+      if (scrumMasterExec && scrumMasterExec.output) {
+        const output = scrumMasterExec.output as any;
+        const tasks = output.tasks || [];
+
+        // 실패한 작업을 다시 pending 상태로 변경
+        let updated = false;
+        for (const task of tasks) {
+          if (task.status === 'failed') {
+            task.status = 'pending';
+            updated = true;
+            console.log(`[Magic API] Resetting failed task ${task.id} to pending`);
+          }
+        }
+
+        if (updated) {
+          await prisma.agentExecution.update({
+            where: { id: scrumMasterExec.id },
+            data: { output: output as any },
+          });
+          console.log('[Magic API] Failed tasks reset to pending');
+        }
+      }
+    } catch (error) {
+      console.error('[Magic API] Error resetting failed tasks:', error);
+    }
+
+    // 3. 개발 루프가 실행 중인지 확인 후, 실행 중이 아니면 시작
+    const isActive = orchestrator.isDevelopmentActive(projectId);
+
+    if (!isActive) {
+      console.log('[Magic API] No active development loop, starting new one...');
+
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+      });
+
+      if (!project) {
+        return res.status(404).json({
+          error: { message: 'Project not found' },
+        });
+      }
+
+      // Epic Story와 Scrum Master 결과 로드
+      const epicStoryExec = await prisma.agentExecution.findFirst({
+        where: { projectId, agentId: 'epic-story' },
+        orderBy: { startedAt: 'desc' },
+      });
+
+      const scrumMasterExec = await prisma.agentExecution.findFirst({
+        where: { projectId, agentId: 'scrum-master' },
+        orderBy: { startedAt: 'desc' },
+      });
+
+      if (!epicStoryExec || !epicStoryExec.output) {
+        return res.status(400).json({
+          error: { message: 'Epic Story must be completed first' },
+        });
+      }
+
+      if (!scrumMasterExec || !scrumMasterExec.output) {
+        return res.status(400).json({
+          error: { message: 'Scrum Master must be completed first' },
+        });
+      }
+
+      // 비동기로 개발 루프 시작
+      orchestrator.runDevelopmentLoop({
+        projectId,
+        project: {
+          name: project.name,
+          description: project.description,
+          wizardLevel: project.wizardLevel,
+        },
+        epicStoryOutput: epicStoryExec.output,
+        selectedPRD: null,
+        currentEpicOrder: -1,
+      }).catch(error => {
+        console.error('[Magic API] Development loop error:', error);
+      });
+
+      console.log('[Magic API] Development loop started');
+    } else {
+      console.log('[Magic API] Development loop already active, just resumed');
+    }
+
+    res.json({
+      message: 'Development resumed',
+      projectId,
+      paused: false,
+      active: true,
+    });
+  } catch (error: any) {
+    console.error('[Magic API] Error resuming development:', error);
+    res.status(500).json({
+      error: {
+        message: 'Failed to resume development',
         ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
       },
     });

@@ -104,7 +104,7 @@ export class TesterAgent extends Agent {
         const codeReviewerOutput = await this.getCodeReviewerOutput(input.projectId);
 
         if (!codeReviewerOutput) {
-          throw new Error('Code Reviewer 실행 결과를 찾을 수 없습니다');
+          throw new Error('Code Reviewer 실행 결과를 찾을 수 없습니다. Code Reviewer가 먼저 완료되어야 테스트를 진행할 수 있습니다.');
         }
 
         if (codeReviewerOutput.reviewResult === 'fail') {

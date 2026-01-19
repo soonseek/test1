@@ -42,7 +42,13 @@
       "Bash(dir:*)",
       "Bash(if not exist \"_bmad-output\\planning-artifacts\" mkdir \"_bmad-output\\planning-artifacts\")",
       "Bash(mkdir:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Skill(superpowers:systematic-debugging)",
+      "Bash(pnpm api:dev)",
+      "Bash(pnpm build)",
+      "Bash(pnpm clean:*)",
+      "SlashCommand(/bmad:core:workflows:party-mode)",
+      "Bash(pnpm tsx:*)"
     ]
   }
 }

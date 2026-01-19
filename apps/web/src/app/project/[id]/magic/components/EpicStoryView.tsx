@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Pause, Play } from 'lucide-react';
 
 interface AgentExecution {
   id: string;
@@ -26,6 +27,8 @@ interface EpicStoryViewProps {
     agentId: string | null;
   };
   onStartDevelopment?: () => void;
+  onPauseDevelopment?: () => void;
+  onResumeDevelopment?: () => void;
 }
 
 export default function EpicStoryView({
@@ -35,6 +38,8 @@ export default function EpicStoryView({
   projectId,
   currentActivity,
   onStartDevelopment,
+  onPauseDevelopment,
+  onResumeDevelopment,
 }: EpicStoryViewProps) {
   const [selectedEpicIndex, setSelectedEpicIndex] = useState<number>(0);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState<number | null>(null);
@@ -231,6 +236,25 @@ export default function EpicStoryView({
           >
             💻 개발 시작 →
           </button>
+          {/* 일시정지/재개 버튼 */}
+          {onPauseDevelopment && (
+            <button
+              onClick={onPauseDevelopment}
+              className="p-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg transition-all border-2 border-amber-500/30"
+              title="개발 일시정지"
+            >
+              <Pause size={16} />
+            </button>
+          )}
+          {onResumeDevelopment && (
+            <button
+              onClick={onResumeDevelopment}
+              className="p-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-all border-2 border-green-500/30"
+              title="개발 재개"
+            >
+              <Play size={16} />
+            </button>
+          )}
         </div>
       </div>
 

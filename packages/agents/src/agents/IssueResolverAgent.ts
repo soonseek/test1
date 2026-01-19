@@ -8,17 +8,23 @@ import { prisma } from '@magic-wand/db';
 
 interface IssueResolverInput {
   projectId: string;
-  issueReport: {
-    slackChannel: string;
-    slackTs: string;
+  issueReport?: {
+    slackChannel?: string;
+    slackTs?: string;
     userMessage: string;
-    reportedAt: Date;
+    reportedAt?: Date;
   };
-  context: {
-    project_id: string;
-    deployment_url: string;
-    github_branch: string;
+  error?: {
+    message: string;
+    stack?: string;
+  };
+  context?: {
+    project_id?: string;
+    deployment_url?: string;
+    github_branch?: string;
     previous_test_results?: any;
+    phase?: string;
+    lastCompletedAgent?: string;
   };
 }
 
@@ -63,7 +69,23 @@ export class IssueResolverAgent extends Agent {
   }
 
   async execute(input: IssueResolverInput): Promise<AgentExecutionResult> {
-    await this.log('이슈 해결 시작', { projectId: input.projectId, issue: input.issueReport.userMessage });
+    // input 정규화: error 기반 input을 issueReport 기반으로 변환
+    if (input.error && !input.issueReport) {
+      input.issueReport = {
+        userMessage: input.error.message,
+        reportedAt: new Date(),
+      };
+    }
+
+    // 필수 필드에 기본값 제공
+    if (!input.issueReport) {
+      input.issueReport = { userMessage: 'Unknown issue' };
+    }
+    if (!input.context) {
+      input.context = {};
+    }
+
+    await this.log('이슈 해결 시작', { projectId: input.projectId, issue: input.issueReport!.userMessage });
 
     let attempt = 0;
     const maxAttempts = 5;
@@ -71,7 +93,7 @@ export class IssueResolverAgent extends Agent {
     while (attempt < maxAttempts) {
       try {
         // 1. 이슈 분류
-        const issueType = await this.classifyIssue(input.issueReport.userMessage);
+        const issueType = await this.classifyIssue(input.issueReport!.userMessage);
 
         // 2. 해결 불가능 여부 확인
         if (issueType === 'cannot_fix') {
@@ -208,7 +230,7 @@ export class IssueResolverAgent extends Agent {
 import { test, expect } from '@playwright/test';
 
 test('reproduce reported issue', async ({ page }) => {
-  await page.goto('${input.context.deployment_url}');
+  await page.goto('${input.context!.deployment_url!}');
 
   // 이슈 재현 시도
   // 실제로는 더 정교한 로직 필요
@@ -243,9 +265,9 @@ test('reproduce reported issue', async ({ page }) => {
     const fixPrompt = `
 다음 이슈를 수정해주세요:
 
-이슈: ${input.issueReport.userMessage}
+이슈: ${input.issueReport!.userMessage}
 원인: ${rootCause}
-배포 URL: ${input.context.deployment_url}
+배포 URL: ${input.context!.deployment_url!}
 
 수정 방법:
 1. 관련 파일 찾기
@@ -269,7 +291,7 @@ test('reproduce reported issue', async ({ page }) => {
     // GitHub Pusher 및 Netlify Deployer 재실행
     return {
       commitSha: 'abc123',
-      deployUrl: input.context.deployment_url,
+      deployUrl: input.context!.deployment_url!,
     };
   }
 
@@ -292,8 +314,8 @@ test('reproduce reported issue', async ({ page }) => {
 
     try {
       await this.slackClient.chat.postMessage({
-        channel: input.issueReport.slackChannel,
-        thread_ts: input.issueReport.slackTs,
+        channel: input.issueReport!.slackChannel!,
+        thread_ts: input.issueReport!.slackTs!,
         text: message,
       });
     } catch (error) {
@@ -310,8 +332,8 @@ test('reproduce reported issue', async ({ page }) => {
 
     try {
       await this.slackClient.chat.postMessage({
-        channel: input.issueReport.slackChannel,
-        thread_ts: input.issueReport.slackTs,
+        channel: input.issueReport!.slackChannel!,
+        thread_ts: input.issueReport!.slackTs!,
         text: message,
       });
     } catch (slackError) {
@@ -325,12 +347,12 @@ test('reproduce reported issue', async ({ page }) => {
 이 이슈는 자동으로 수정하기 어렵습니다.
 더 자세한 정보를 주시거나 개발자가 직접 확인해야 합니다.
 
-**이슈:** ${input.issueReport.userMessage}`;
+**이슈:** ${input.issueReport!.userMessage}`;
 
     try {
       await this.slackClient.chat.postMessage({
-        channel: input.issueReport.slackChannel,
-        thread_ts: input.issueReport.slackTs,
+        channel: input.issueReport!.slackChannel!,
+        thread_ts: input.issueReport!.slackTs!,
         text: message,
       });
     } catch (error) {

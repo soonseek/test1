@@ -96,6 +96,9 @@ export class RequirementAnalyzerAgent extends Agent {
       });
 
       // 3. Calculate complexity and estimates (based on standard option)
+      if (prdOptions.length < 2) {
+        throw new Error(`PRD 옵션 생성 실패: ${prdOptions.length}개만 생성됨 (최소 2개 필요)`);
+      }
       const summary = this.calculateSummary(prdOptions[1].analysis);
 
       const output: RequirementAnalyzerOutput = {
@@ -210,6 +213,11 @@ export class RequirementAnalyzerAgent extends Agent {
       } catch (error) {
         await this.logError(new Error(`${strategy.name} PRD 생성 실패: ${error}`));
       }
+    }
+
+    // 최소 1개 이상의 PRD 옵션이 생성되어야 함
+    if (prdOptions.length === 0) {
+      throw new Error('모든 PRD 생성 시도가 실패했습니다. LLM 호출 또는 응답 파싱을 확인하세요.');
     }
 
     return prdOptions;
@@ -511,6 +519,10 @@ MAGIC WAND의 기술 스택은 **PRD에 명시된 대로 고정**되어 있으�
     // Clean up common JSON issues
     // Remove trailing commas (common in LLM outputs)
     jsonText = jsonText.replace(/,(\s*[}\]])/g, '$1');
+
+    // Remove parenthetical comments in values (e.g., "true (Mobile First)" or "value (description)")
+    // This handles LLM adding explanatory text in parentheses within JSON
+    jsonText = jsonText.replace(/\s*\([^)]*\)(?=\s*[,}\]])/g, '');
 
     // Try to parse
     try {

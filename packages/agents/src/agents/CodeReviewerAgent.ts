@@ -41,7 +41,7 @@ interface CodeReviewerOutput {
 
 export class CodeReviewerAgent extends Agent {
   private anthropic: Anthropic;
-  private projectRoot: string;
+  private magicWandRoot: string;
 
   constructor() {
     super({
@@ -66,7 +66,12 @@ export class CodeReviewerAgent extends Agent {
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
 
-    this.projectRoot = process.cwd();
+    this.magicWandRoot = process.cwd();
+  }
+
+  private getProjectDir(projectId: string): string {
+    // /projects/<projectId>/ 경로 반환
+    return join(this.magicWandRoot, 'projects', projectId);
   }
 
   async execute(input: CodeReviewerInput): Promise<AgentExecutionResult> {
@@ -89,6 +94,12 @@ export class CodeReviewerAgent extends Agent {
 
       // 2. 현재 Task 정보 로드
       const currentTask = developerOutput.currentTask;
+
+      // ⚠️ Developer가 실패한 경우 체크
+      if (!currentTask) {
+        throw new Error('Developer가 실패하여 현재 Task 정보를 찾을 수 없습니다');
+      }
+
       const story = await this.getStory(input.projectId, currentTask.storyId);
 
       // 3. 코드 리뷰 수행
@@ -163,6 +174,9 @@ export class CodeReviewerAgent extends Agent {
       reviewedFiles: [],
     });
 
+    // 프로젝트 디렉토리 경로
+    const projectDir = this.getProjectDir(input.projectId);
+
     // 리뷰할 파일 수집
     const filesToReview = [
       ...(developerOutput.generatedFiles || []),
@@ -174,7 +188,7 @@ export class CodeReviewerAgent extends Agent {
 
     for (const fileData of filesToReview) {
       const filePath = typeof fileData === 'string' ? fileData : fileData.path;
-      const fullPath = join(this.projectRoot, filePath);
+      const fullPath = join(projectDir, filePath);
 
       if (!existsSync(fullPath)) {
         failures.push({

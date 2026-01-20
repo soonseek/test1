@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import path from 'path';
 import { prisma } from '@magic-wand/db';
 import { getEventBus } from '@magic-wand/agent-framework';
 import { getOrchestrator } from '../orchestrator';
@@ -529,9 +530,13 @@ router.post('/github/create-repo/:projectId', async (req, res) => {
     const orchestrator = getOrchestrator();
 
     // GitHubPusherAgent 실행 (githubOwner를 별도로 전달)
+    // CodeGeneratorAgent와 동일한 workspace 경로 사용
+    const workspaceBase = process.env.CODE_WORKSPACE_BASE || path.join(process.cwd(), '../workspaces');
+    const codeDirectory = path.join(workspaceBase, projectId);
+
     orchestrator.runAgent('github-pusher', projectId, {
       projectId,
-      codeDirectory: process.cwd(), // 프로젝트 루트 디렉토리
+      codeDirectory, // workspaces/[projectId] 디렉토리 (코드 생성 위치)
       githubRepoUrl,
       githubOwner, // API 호출용 owner (orgs/ORG_NAME 또는 username)
       githubPat: process.env.GITHUB_PAT,
@@ -917,6 +922,157 @@ router.post('/resume', async (req, res) => {
     res.status(500).json({
       error: {
         message: 'Failed to resume development',
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
+      },
+    });
+  }
+});
+
+// POST /api/magic/retry-failed-tasks - 실패한 Task 재시도
+router.post('/retry-failed-tasks', async (req, res) => {
+  try {
+    const { projectId } = req.body;
+    console.log('[Magic API] Retry failed tasks request for projectId:', projectId);
+
+    if (!projectId) {
+      console.error('[Magic API] Missing projectId');
+      return res.status(400).json({
+        error: { message: 'projectId is required' },
+      });
+    }
+
+    const orchestrator = getOrchestrator(projectId);
+
+    // Scrum Master 실행 결과 로드
+    const scrumMasterExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'scrum-master' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (!scrumMasterExec || !scrumMasterExec.output) {
+      return res.status(404).json({
+        error: { message: 'Scrum Master execution not found' },
+      });
+    }
+
+    const scrumMasterOutput = scrumMasterExec.output as any;
+    const tasks = scrumMasterOutput.tasks || [];
+
+    // 실패한 Task 찾기
+    const failedTasks = tasks.filter((t: any) => t.status === 'failed');
+
+    if (failedTasks.length === 0) {
+      return res.status(400).json({
+        error: { message: 'No failed tasks found' },
+      });
+    }
+
+    console.log(`[Magic API] Found ${failedTasks.length} failed tasks, collecting failure context...`);
+
+    // 실패 컨텍스트 수집 (Ralph 방식)
+    const failureContexts: any[] = [];
+
+    for (const task of failedTasks) {
+      // 해당 Task에 대한 에러 정보 수집
+      const taskErrors: any[] = [];
+
+      // Developer, Code Reviewer, Tester 실행 결과 확인
+      for (const agentId of ['developer', 'code-reviewer', 'tester']) {
+        const agentExec = await prisma.agentExecution.findFirst({
+          where: {
+            projectId,
+            agentId,
+            status: 'COMPLETED',
+          },
+          orderBy: { startedAt: 'desc' },
+        });
+
+        if (agentExec) {
+          const output = agentExec.output as any;
+          // output 내부의 error 확인
+          if (output?.error?.taskId === task.id) {
+            taskErrors.push({
+              agentId,
+              agentName: agentExec.agentName,
+              error: output.error,
+            });
+          }
+          // execution error 확인
+          else if (agentExec.error) {
+            taskErrors.push({
+              agentId,
+              agentName: agentExec.agentName,
+              error: agentExec.error,
+            });
+          }
+        }
+      }
+
+      failureContexts.push({
+        taskId: task.id,
+        title: task.title,
+        description: task.description,
+        errors: taskErrors,
+      });
+    }
+
+    console.log(`[Magic API] Collected failure context for ${failureContexts.length} tasks`);
+
+    // 실패한 Task를 pending으로 변경 (재시도 횟수 관리를 위한 retryCount 추가)
+    for (const task of failedTasks) {
+      task.status = 'pending';
+      task.retryCount = (task.retryCount || 0) + 1;
+      task.lastFailure = failureContexts.find((fc: any) => fc.taskId === task.id);
+    }
+
+    // DB 업데이트
+    await prisma.agentExecution.update({
+      where: { id: scrumMasterExec.id },
+      data: { output: scrumMasterOutput as any },
+    });
+
+    console.log('[Magic API] Failed tasks reset to pending');
+
+    // 개발 재시작
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+    });
+
+    const epicStoryExec = await prisma.agentExecution.findFirst({
+      where: { projectId, agentId: 'epic-story' },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    if (!project || !epicStoryExec) {
+      return res.status(404).json({
+        error: { message: 'Project or Epic/Story not found' },
+      });
+    }
+
+    // 개발 루프 시작 (백그라운드) - 실패 컨텍스트 전달
+    orchestrator.runDevelopmentLoop({
+      projectId,
+      project,
+      epicStoryOutput: epicStoryExec.output,
+      selectedPRD: null,
+      currentEpicOrder: -1,
+      failureContexts, // 실패 컨텍스트 전달 (Ralph 방식)
+    }).catch(error => {
+      console.error('[Magic API] Development loop error:', error);
+    });
+
+    console.log('[Magic API] Development loop restarted');
+
+    res.json({
+      message: 'Failed tasks retry initiated',
+      projectId,
+      failedTasksCount: failedTasks.length,
+    });
+  } catch (error: any) {
+    console.error('[Magic API] Error retrying failed tasks:', error);
+    res.status(500).json({
+      error: {
+        message: 'Failed to retry tasks',
         ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
       },
     });

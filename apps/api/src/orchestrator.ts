@@ -13,6 +13,7 @@ import { NetlifyDeployerAgent } from '@magic-wand/agents';
 import { E2ETestRunnerAgent } from '@magic-wand/agents';
 import { IssueResolverAgent } from '@magic-wand/agents';
 import { DocumentParserAgent } from '@magic-wand/agents';
+import { DatabaseInitializerAgent } from '@magic-wand/agents';
 
 interface MagicStartEvent {
   projectId: string;
@@ -48,6 +49,7 @@ export class MagicOrchestrator {
     this.agents.set('e2e-test-runner', new E2ETestRunnerAgent());
     this.agents.set('issue-resolver', new IssueResolverAgent());
     this.agents.set('document-parser', new DocumentParserAgent());
+    this.agents.set('database-initializer', new DatabaseInitializerAgent());
   }
 
   async start() {
@@ -753,12 +755,16 @@ export class MagicOrchestrator {
     epicStoryOutput: any;
     selectedPRD: any;
     currentEpicOrder: number;
+    failureContexts?: any[]; // 실패 컨텍스트 (재시도 시)
   }): Promise<{ success: boolean; tasksCompleted: number }> {
-    const { projectId, project, epicStoryOutput, selectedPRD, currentEpicOrder } = params;
+    const { projectId, project, epicStoryOutput, selectedPRD, currentEpicOrder, failureContexts } = params;
 
     // 활성 개발 루프로 등록
     this.activeDevelopmentLoops.add(projectId);
     console.log(`[Orchestrator] 🔄 Development loop started for ${projectId}, active loops: ${this.activeDevelopmentLoops.size}`);
+    if (failureContexts && failureContexts.length > 0) {
+      console.log(`[Orchestrator] 📋 Failure contexts provided for ${failureContexts.length} tasks`);
+    }
 
     try {
       let tasksCompleted = 0;
@@ -768,6 +774,14 @@ export class MagicOrchestrator {
       // 작업별 재시도 횟수 추적
       const taskRetryCount = new Map<string, number>();
       const MAX_TASK_RETRIES = 3;
+
+      // 실패 컨텍스트를 맵으로 변환 (taskId -> failureContext)
+      const failureContextMap = new Map<string, any>();
+      if (failureContexts) {
+        for (const fc of failureContexts) {
+          failureContextMap.set(fc.taskId, fc);
+        }
+      }
 
       while (iteration < maxIterations) {
       iteration++;
@@ -786,6 +800,21 @@ export class MagicOrchestrator {
       }
 
       const scrumMasterOutput = scrumMasterExec.output as any;
+
+      // 실패한 Task 확인 -> 개발 루프 중단
+      const failedTasks = scrumMasterOutput.tasks?.filter((t: any) => t.status === 'failed') || [];
+      if (failedTasks.length > 0) {
+        console.log(`[Orchestrator] ❌ Story 개발 실패: ${failedTasks.length}개의 Task가 실패하여 개발 루프를 중단합니다.`);
+        console.log(`[Orchestrator] 실패한 Task:`, failedTasks.map((t: any) => t.title));
+
+        // 활성 개발 루프에서 제거
+        this.activeDevelopmentLoops.delete(projectId);
+
+        return {
+          success: false,
+          tasksCompleted,
+        };
+      }
 
       // 현재 Epic의 pending Task 찾기 (currentEpicOrder가 -1이면 모든 Epic)
       const pendingTasks = scrumMasterOutput.tasks?.filter((t: any) => {
@@ -869,6 +898,16 @@ export class MagicOrchestrator {
       // Developer 실행
       console.log(`[Orchestrator] 📝 Developer: Task ${task.id} - ${task.title} (시도 ${retryCount + 1}/${MAX_TASK_RETRIES + 1})`);
 
+      // 실패 컨텍스트 확인 (Ralph 방식)
+      const taskFailureContext = failureContextMap.get(task.id) || task.lastFailure;
+      if (taskFailureContext) {
+        console.log(`[Orchestrator] 📋 Failure context found for task ${task.id}:`);
+        console.log(`[Orchestrator]   - Errors: ${taskFailureContext.errors?.length || 0}`);
+        taskFailureContext.errors?.forEach((err: any, idx: number) => {
+          console.log(`[Orchestrator]   [${idx}] ${err.agentName}: ${err.error?.message || 'Unknown error'}`);
+        });
+      }
+
       let developerResult;
       try {
         developerResult = await this.runAgent('developer', projectId, {
@@ -881,6 +920,7 @@ export class MagicOrchestrator {
           epicStory: epicStoryOutput,
           scrumMaster: scrumMasterOutput,
           selectedPRD,
+          failureContext: taskFailureContext, // 실패 컨텍스트 전달
         });
       } catch (error: any) {
         console.log(`[Orchestrator] ⚠️ Developer 실패: ${error.message}`);

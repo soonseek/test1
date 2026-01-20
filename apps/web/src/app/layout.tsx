@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Inter, Space_Grotesk } from 'next/font/google';
 import './globals.css';
-import { ToastProvider } from '@/contexts/ToastContext';
+import { ClientProviders } from '@/components/ClientProviders';
 
 const inter = Inter({ 
   subsets: ['latin'],
@@ -26,7 +26,7 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body className={`${inter.variable} ${spaceGrotesk.variable} font-sans`}>
-        <ToastProvider>{children}</ToastProvider>
+        <ClientProviders>{children}</ClientProviders>
       </body>
     </html>
   );

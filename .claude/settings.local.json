@@ -52,7 +52,10 @@
       "Bash(copy:*)",
       "Bash(tasklist:*)",
       "Bash(npx prisma migrate dev:*)",
-      "Bash(pnpm run dev)"
+      "Bash(pnpm run dev)",
+      "Bash(test:*)",
+      "Bash(\"C:\\nvm4w\\nodejs\\claude.cmd\" --version)",
+      "Bash(npx shadcn@latest init:*)"
     ]
   }
 }

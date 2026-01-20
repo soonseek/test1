@@ -3,6 +3,7 @@ import { prisma } from '@magic-wand/db';
 import { Anthropic } from '@anthropic-ai/sdk';
 import { execSync } from 'child_process';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
+import fs from 'fs-extra';
 import { join } from 'path';
 
 interface DeveloperInput {
@@ -11,6 +12,19 @@ interface DeveloperInput {
     name: string;
     description: string;
     wizardLevel: string;
+  };
+  failureContext?: {
+    taskId: string;
+    title: string;
+    description: string;
+    errors: Array<{
+      agentId: string;
+      agentName: string;
+      error: {
+        message: string;
+        stackTrace?: string;
+      };
+    }>;
   };
 }
 
@@ -248,7 +262,7 @@ export class DeveloperAgent extends Agent {
     });
 
     // 프롬프트 빌드
-    const prompt = this.buildDevelopmentPrompt(task, prd, story, scrumMasterOutput);
+    const prompt = this.buildDevelopmentPrompt(task, prd, story, scrumMasterOutput, input.failureContext);
 
     // LLM 응답 재시도 로직 (지수 백오프 적용)
     let generatedFiles: any[] = [];
@@ -274,6 +288,17 @@ export class DeveloperAgent extends Agent {
 
         const text = llmResponse.content[0].type === 'text' ? llmResponse.content[0].text : '';
 
+        // 🐛 DEBUG: LLM 응답 전체를 파일로 저장하여 분석
+        const debugDir = join(this.magicWandRoot, 'debug-llm-responses');
+        await fs.ensureDir(debugDir);
+        const debugFile = join(debugDir, `task-${task.id}-${Date.now()}.md`);
+        writeFileSync(debugFile, text, 'utf-8');
+        await this.log('🐛 LLM 응답 전체를 디버그 파일에 저장', {
+          taskId: task.id,
+          debugFile,
+          responseLength: text.length,
+        });
+
         // 생성된 코드 파싱 및 파일 작성
         const result = await this.parseAndWriteCode(text, task, input);
         generatedFiles = result.generatedFiles;
@@ -281,7 +306,30 @@ export class DeveloperAgent extends Agent {
 
         // 파일이 하나라도 생성되었는지 확인
         if (generatedFiles.length === 0 && changes.length === 0) {
-          throw new Error(`LLM이 파일을 생성하지 않았습니다 (response length: ${text.length})`);
+          // 응답 분석으로 상세 에러 제공
+          const analysis = this.analyzeLLMResponse(text);
+
+          // 🐛 DEBUG: 실패 시 응답을 별도 파일로 저장
+          const failureDebugFile = join(debugDir, `task-${task.id}-failure-${Date.now()}.md`);
+          writeFileSync(failureDebugFile, text, 'utf-8');
+
+          await this.log('❌ LLM 파일 생성 실패 - 상세 분석', {
+            taskId: task.id,
+            responseLength: text.length,
+            responseType: analysis.type,
+            elements: analysis.elements,
+            failureDebugFile,
+          });
+
+          throw new Error(
+            `LLM이 파일을 생성하지 않았습니다.\n` +
+            `- 응답 길이: ${text.length} 바이트\n` +
+            `- 응답 유형: ${analysis.type}\n` +
+            `- 발견된 요소: ${analysis.elements.join(', ') || '없음'}\n` +
+            `- 응답 미리보기 (앞 500자): ${text.substring(0, 500)}...\n` +
+            `- 응답 미리보기 (뒤 500자): ...${text.substring(Math.max(0, text.length - 500))}\n` +
+            `- 🐛 전체 응답은 파일 확인: ${failureDebugFile}`
+          );
         }
 
         await this.log('LLM 코드 생성 성공', {
@@ -320,30 +368,89 @@ export class DeveloperAgent extends Agent {
     return output;
   }
 
-  private buildDevelopmentPrompt(task: any, prd: any, story: any, scrumMasterOutput: any): string {
+  private buildDevelopmentPrompt(task: any, prd: any, story: any, scrumMasterOutput: any, failureContext?: any): string {
     const prdContent = prd?.analysisMarkdown || '';
     const projectId = task.projectId || 'current-project';
+
+    // Task 유형 감지: 파일 확인/수정 vs 신규 생성
+    const isFileCheckTask = /확인|검토|수정|추가|check|review|modify|add/i.test(task.title || task.description || '');
+
+    // 실패 컨텍스트가 있는 경우 (Ralph 방식)
+    let failureContextSection = '';
+    if (failureContext && failureContext.errors && failureContext.errors.length > 0) {
+      failureContextSection = `
+## ⚠️ 이전 실패 정보 (재시도)
+
+이 Task는 이전에 실패한 기록이 있습니다. **반드시 아래 실패 원인을 분석하고 피하세요**.
+
+### 실패 횟수
+- 이번 시도: 재시도 ${task.retryCount || 1}회차
+
+### 이전 실패 원인
+${failureContext.errors.map((errorInfo: any, idx: number) => `
+#### ${idx + 1}. ${errorInfo.agentName} (${errorInfo.agentId})
+\`\`\`
+${errorInfo.error.message || '알 수 없는 오류'}
+\`\`\`
+${errorInfo.error.stackTrace ? `**Stack Trace:**\n\`\`\`\n${errorInfo.error.stackTrace.substring(0, 500)}...\n\`\`\`\n` : ''}
+`).join('')}
+
+### ✅ 실패 방지 가이드라인
+
+**반드시 다음 사항을 준수하여 실패를 방지하세요:**
+
+1. **파일 생성 확인**:
+   - LLM 응답에 "파일을 생성하지 않았습니다" 오류가 있는 경우:
+     - 반드시 \`## 파일: [경로]\` 헤더를 사용하세요
+     - 코드는 \`\`\`typescript 또는 \`\`\`tsx로 감싸세요
+     - import 문을 포함한 **완전한 코드**를 작성하세요
+     - 코드 블록을 반드시 \`## 파일: 헤더 다음 줄에 바로 시작하세요
+
+2. **파일 경로 규칙**:
+   - 절대 경로 사용 금지 (\`projects/\`, \`/apps/\` 등)
+   - 항상 \`src/\`로 시작하세요 (예: \`src/app/page.tsx\`)
+   - 필요한 모든 디렉토리를 생성하세요
+
+3. **응답 형식**:
+   - 분석만 하지 말고 **실제 코드를 생성**하세요
+   - "확인했습니다", "추가하겠습니다" 같은 설명만 하지 말고 코드를 작성하세요
+   - 텍스트와 코드를 섞지 말고, 각 파일을 명확하게 구분하세요
+
+4. **특히 Prisma Schema 작업 시**:
+   - 기존 파일 내용을 **전체** 다시 작성하세요
+   - 일부만 수정하거나 추가 부분만 작성하지 마세요
+   - datasource, generator, **모든 model**을 포함한 완전한 파일을 작성하세요
+
+---
+
+`;
+    }
 
     return `# 개발 Task 수행 요청
 
 당신은 Next.js 14+ Full-Stack 개발자입니다.
 할당된 Task를 수행하고 필요한 코드를 생성해주세요.
 
+${failureContextSection}
+
 ## ⚠️ 중요: 파일 경로 지정
 
+**프로젝트 구조:**
+이 프로젝트는 **단일 Next.js 앱**입니다 (monorepo가 아닙니다).
+
 **절대 지켜야 할 규칙:**
-1. 프로젝트 루트는 이미 설정되어 있습니다
+1. 프로젝트 루트는 이미 설정되어 있습니다 (projects/{project-id}/)
 2. **절대 경로를 지정하지 마세요** (예: /projects/, ./projects/)
-3. **상대 경로만 사용하세요** (예: apps/web/src/app/page.tsx)
-4. **'projects/' 폴더를 경로 접두어로 사용하지 마세요**
-5. 모든 경로는 apps/ 또는 docs/로 시작해야 합니다
+3. **항상 src/로 시작하세요** (예: src/app/page.tsx)
+4. **apps/web/ 또는 apps/api/ 접두사를 사용하지 마세요**
+5. **필요한 모든 디렉토리를 자동으로 생성하세요**
 
 **올바른 경로 예시:**
-- ✅ apps/web/src/app/page.tsx
-- ✅ apps/api/src/routes/auth.ts
-- ✅ docs/development-plan.md
-- ❌ projects/xxx/apps/web/src/app/page.tsx
-- ❌ /projects/xxx/apps/web/src/app/page.tsx
+- ✅ src/app/page.tsx
+- ✅ src/lib/api/pokemon.ts
+- ✅ src/components/Header.tsx
+- ❌ apps/web/src/app/page.tsx (monorepo 경로 사용 금지)
+- ❌ projects/xxx/src/app/page.tsx (절대 경로 사용 금지)
 
 ## Task 정보
 
@@ -400,6 +507,44 @@ docs/               # Documentation (PRD, Epic, Story)
 
 ## 출력 형식
 
+${isFileCheckTask ? `
+**⚠️ 중요: 이 Task는 기존 파일 확인/수정 작업입니다**
+
+**반드시 다음 규칙을 따르세요:**
+1. 대상 파일의 **완전한 전체 내용**을 반드시 작성하세요
+2. **절대 중간에 생략하지 말고** 끝까지 완성하세요
+3. 파일이 이미 존재하면 **전체 내용을 그대로** 출력하세요
+4. 추가/수정할 부분이 있으면 **반영된 전체 코드**를 출력하세요
+5. "이 파일을 확인했습니다" 같은 설명만 하지 말고 **실제 코드를 작성**하세요
+
+**올바른 예시:**
+\`\`\`markdown
+## 파일: prisma/schema.prisma
+
+\`\`\`prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ... 모든 model 정의를 포함하여 파일 끝까지 전체 작성
+model PokemonCache {
+  id        String   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+}
+\`\`\`
+\`\`\`
+
+**❌ 잘못된 예시:**
+- 파일을 확인했습니다. (코드 없음)
+- PokemonCache 모델이 있습니다. (코드 없음)
+- 코드의 일부만 작성하고 중간에 생략
+` : `
 각 파일을 다음 형식으로 생성하세요:
 
 \`\`\`markdown
@@ -419,6 +564,7 @@ import { NextRequest, NextResponse } from 'next/server';
 // ... code here
 \`\`\`
 \`\`\`
+`}
 
 ## ⚠️ 필수 준수 사항
 
@@ -427,6 +573,8 @@ import { NextRequest, NextResponse } from 'next/server';
 2. 코드는 **\`\`\`typescript** 또는 **\`\`\`tsx**로 감싸기
 3. import 문 포함
 4. 실제로 작동하는 완전한 코드
+5. **파일 중간에 절대 생략하지 말고 끝까지 완성하세요**
+6. **코드 블록을 닫지 않은 채로 중단하지 마세요** (\`\`\`로 반드시 닫기)
 
 **❌ 절대 하지 말 것:**
 - 코드 없이 설명만 작성
@@ -463,6 +611,40 @@ export default function Home() {
 `;
   }
 
+  /**
+   * LLM 응답 분석 - 응답 유형과 문제점 감지
+   */
+  private analyzeLLMResponse(text: string): { type: string; elements: string[] } {
+    const elements: string[] = [];
+
+    // 마크다운 헤더 확인
+    if (text.includes('##')) elements.push('markdown-headers');
+
+    // 코드 블록 확인 (다양한 형식)
+    if (text.includes('```')) elements.push('code-blocks');
+    if (text.includes('```typescript')) elements.push('typescript-blocks');
+    if (text.includes('```tsx')) elements.push('tsx-blocks');
+
+    // "파일:" 헤더 확인
+    if (/##\s*파일:/.test(text)) elements.push('file-headers');
+    if (/##\s*File:/.test(text)) elements.push('file-headers-en');
+
+    // 응답 유형 판단
+    if (!text.includes('```') && !elements.includes('file-headers')) {
+      return { type: 'text-only', elements };
+    }
+
+    if (elements.includes('markdown-headers') && !elements.includes('file-headers')) {
+      return { type: 'malformed', elements };
+    }
+
+    if (elements.includes('code-blocks') && !elements.includes('file-headers')) {
+      return { type: 'malformed', elements };
+    }
+
+    return { type: 'unknown', elements };
+  }
+
   private async parseAndWriteCode(
     text: string,
     task: any,
@@ -486,26 +668,44 @@ export default function Home() {
     // 파일 블록 추출 - 여러 형식 시도
     let fileBlocks = text.match(/## 파일: (.+?)\n\n```[\s\S]*?```/g);
 
+    await this.log('🔍 Regex 패턴 매칭 시도 - Pattern 1', {
+      taskId: task.id,
+      pattern: '/## 파일: (.+?)\\n\\n```[\\s\\S]*?```/g',
+      matched: fileBlocks?.length || 0,
+    });
+
     // 첫 번째 정규식 실패 시 대체 형식 시도
     if (!fileBlocks || fileBlocks.length === 0) {
-      await this.log('첫 번째 형식 매칭 실패, 대체 형식 시도', {
+      await this.log('Pattern 1 실패, Pattern 2 시도', {
         taskId: task.id,
       });
 
       // 대체 형식 1: ## 파일: ... ```typescript``` (줄바꿈 없음)
       fileBlocks = text.match(/## 파일: (.+?)\n```[\s\S]*?```/g);
+
+      await this.log('🔍 Regex 패턴 매칭 시도 - Pattern 2', {
+        taskId: task.id,
+        pattern: '/## 파일: (.+?)\\n```[\\s\\S]*?```/g',
+        matched: fileBlocks?.length || 0,
+      });
     }
 
     if (!fileBlocks || fileBlocks.length === 0) {
-      await this.log('두 번째 형식도 실패, 세 번째 형식 시도', {
+      await this.log('Pattern 2 실패, Pattern 3 시도 (트렁케이션 허용)', {
         taskId: task.id,
       });
 
-      // 대체 형식 2: ```[typescript] ... ``` (파일 헤더 없음)
-      fileBlocks = text.match(/```(?:typescript|tsx|ts|js)\n([\s\S]*?)```/g);
+      // 대체 형식 2: ## 파일: ... ```lang (트레일링 ``` 없이 - 트렁케이션 대응)
+      fileBlocks = text.match(/## 파일: (.+?)\n```[\s\S]*/g);
+
+      await this.log('🔍 Regex 패턴 매칭 시도 - Pattern 3', {
+        taskId: task.id,
+        pattern: '/## 파일: (.+?)\\n```[\\s\\S]*/g (트렁케이션 허용)',
+        matched: fileBlocks?.length || 0,
+      });
 
       if (fileBlocks && fileBlocks.length > 0) {
-        await this.log('세 번째 형식으로 파일 블록 추출 성공', {
+        await this.log('✅ Pattern 3로 파일 블록 추출 성공', {
           taskId: task.id,
           blockCount: fileBlocks.length,
         });
@@ -513,10 +713,64 @@ export default function Home() {
     }
 
     if (!fileBlocks || fileBlocks.length === 0) {
+      await this.log('Pattern 3 실패, Pattern 4 시도 (파일 헤더 없음)', {
+        taskId: task.id,
+      });
+
+      // 대체 형식 3: ```[typescript] ... ``` (파일 헤더 없음)
+      fileBlocks = text.match(/```(?:typescript|tsx|ts|js|prisma)\n([\s\S]*?)```/g);
+
+      await this.log('🔍 Regex 패턴 매칭 시도 - Pattern 4', {
+        taskId: task.id,
+        pattern: '/```(?:typescript|tsx|ts|js|prisma)\\n([\\s\\S]*?)```/g (파일 헤더 없음)',
+        matched: fileBlocks?.length || 0,
+      });
+
+      if (fileBlocks && fileBlocks.length > 0) {
+        await this.log('✅ Pattern 4로 파일 블록 추출 성공', {
+          taskId: task.id,
+          blockCount: fileBlocks.length,
+        });
+      }
+    }
+
+    if (!fileBlocks || fileBlocks.length === 0) {
+      // 상세한 응답 분석
+      const responseAnalysis = this.analyzeLLMResponse(text);
+
       await this.log('생성된 코드에서 파일 블록을 찾을 수 없음', {
         taskId: task.id,
+        responseLength: text.length,
         responsePreview: text.substring(0, 200),
+        hasMarkdownHeaders: text.includes('##'),
+        hasCodeBlocks: text.includes('```'),
+        analysis: responseAnalysis,
       });
+
+      // LLM이 텍스트/분석만 반환한 경우
+      if (responseAnalysis.type === 'text-only') {
+        throw new Error(
+          `LLM이 파일 블록을 생성하지 않았습니다.\n` +
+          `응답 유형: 텍스트/분석만 있음 (코드 블록 없음)\n` +
+          `응답 길이: ${text.length} 바이트\n` +
+          `응답 미리보기:\n${text.substring(0, 300)}...\n\n` +
+          `가능한 원인:\n` +
+          `1. Task가 기존 파일 확인 작업인데 LLM이 새 파일 생성으로 이해\n` +
+          `2. LLM이 코드 생성 대신 분석만 수행\n` +
+          `3. 프롬프트 지시사항을 따르지 않음`
+        );
+      }
+
+      // LLM이 잘못된 형식으로 반환한 경우
+      if (responseAnalysis.type === 'malformed') {
+        throw new Error(
+          `LLM 응답 형식이 올바르지 않습니다.\n` +
+          `응답 길이: ${text.length} 바이트\n` +
+          `발견된 요소: ${responseAnalysis.elements.join(', ')}\n` +
+          `응답 미리보기:\n${text.substring(0, 300)}...`
+        );
+      }
+
       return { generatedFiles, changes };
     }
 
@@ -525,11 +779,21 @@ export default function Home() {
       const pathMatch = block.match(/## 파일: (.+)/);
       if (!pathMatch) continue;
 
-      const filePath = pathMatch[1].trim();
+      let filePath = pathMatch[1].trim();
+
+      // apps/web/ 또는 apps\web\ 접두사 제거 (실제 프로젝트 구조에 맞춤)
+      filePath = filePath.replace(/^apps\/(web|api)\//, '').replace(/^apps\\(web|api)\\/, '');
+
       const fullPath = join(projectDir, filePath);
 
-      // 코드 내용 추출
-      const codeMatch = block.match(/```(?:typescript|tsx|ts|js)?\n([\s\S]*?)```/);
+      // 코드 내용 추출 (트렁케이션 대응: 닫는 ```가 없어도 추출)
+      let codeMatch = block.match(/```(?:typescript|tsx|ts|js|prisma)?\n([\s\S]*?)```/);
+
+      // 닫는 ```가 없는 경우 (트렁케이션) - 여는 ``` 이후 전체 추출
+      if (!codeMatch) {
+        codeMatch = block.match(/```(?:typescript|tsx|ts|js|prisma)?\n([\s\S]*)/);
+      }
+
       if (!codeMatch) continue;
 
       const code = codeMatch[1];
@@ -563,24 +827,43 @@ export default function Home() {
 
         // 디렉토리 생성 (존재하지 않는 경우)
         try {
-          execSync(`mkdir -p "${dirPath}"`, { cwd: projectDir, windowsHide: true });
-        } catch (e) {
-          // Directory might already exist, ignore error
+          await fs.ensureDir(dirPath);
+          await this.log('디렉토리 생성', { dir: dirPath, file: filePath });
+        } catch (error) {
+          await this.logError(error as Error);
+          // 디렉토리 생성 실패 시 파일 생성 계속 시도
         }
 
         // 파일 쓰기
-        writeFileSync(fullPath, code, 'utf-8');
+        try {
+          writeFileSync(fullPath, code, 'utf-8');
 
-        generatedFiles.push({
-          path: filePath,
-          content: code,
-          type: fileType,
-        });
+          generatedFiles.push({
+            path: filePath,
+            content: code,
+            type: fileType,
+          });
 
-        await this.log('파일 생성', {
-          file: filePath,
-          type: fileType,
-        });
+          await this.log('파일 생성 성공', {
+            file: filePath,
+            type: fileType,
+          });
+        } catch (error: any) {
+          await this.logError(error);
+
+          // 상세 에러 메시지
+          if (error.code === 'ENOENT') {
+            throw new Error(
+              `파일 생성 실패: 디렉토리가 존재하지 않습니다.\n` +
+              `요청 경로: ${filePath}\n` +
+              `전체 경로: ${fullPath}\n` +
+              `대상 디렉토리: ${dirPath}\n` +
+              `해결책: mkdir -p "${dirPath}" 명령어로 디렉토리를 먼저 생성하세요.`
+            );
+          }
+
+          throw error;
+        }
       }
     }
 

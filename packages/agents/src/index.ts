@@ -11,3 +11,4 @@ export * from './agents/NetlifyDeployerAgent';
 export * from './agents/E2ETestRunnerAgent';
 export * from './agents/IssueResolverAgent';
 export * from './agents/DocumentParserAgent';
+export * from './agents/DatabaseInitializerAgent';

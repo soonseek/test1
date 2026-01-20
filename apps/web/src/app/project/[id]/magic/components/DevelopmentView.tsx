@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Pause, Play } from 'lucide-react';
+import { useToast } from '@/contexts/ToastContext';
 
 interface AgentExecution {
   id: string;
@@ -29,6 +30,9 @@ interface DevelopmentViewProps {
   onStartDevelopment?: () => void;
   onPauseDevelopment?: () => void;
   onResumeDevelopment?: () => void;
+  onStoryFailure?: (failedTasks: any[]) => void;
+  onClearFailure?: () => void;
+  isDevelopmentPaused?: boolean;
 }
 
 interface Task {
@@ -76,8 +80,14 @@ export default function DevelopmentView({
   onStartDevelopment,
   onPauseDevelopment,
   onResumeDevelopment,
+  onStoryFailure,
+  onClearFailure,
+  isDevelopmentPaused = false,
 }: DevelopmentViewProps) {
+  const toast = useToast();
   const [developmentStarted, setDevelopmentStarted] = useState(false);
+  const [maxRetries, setMaxRetries] = useState(1); // 기본 1회, 최대 5회
+  const [isRetrying, setIsRetrying] = useState(false); // 재시도 중임을 표시하는 플래그
   const [selectedEpicIndex, setSelectedEpicIndex] = useState<number | null>(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState<number | null>(null);
   const [showTaskList, setShowTaskList] = useState(false);
@@ -86,6 +96,7 @@ export default function DevelopmentView({
   const [logsLastModified, setLogsLastModified] = useState<number | null>(null);
   const [logLineCount, setLogLineCount] = useState<number>(100); // 기본 100줄
   const [showPollingLogs, setShowPollingLogs] = useState<boolean>(false); // 폴링 로그 숨김 기본
+  const [autoScrollPaused, setAutoScrollPaused] = useState<boolean>(false); // 로그 자동 스크롤 일시정지
 
   // Epic & Story 데이터 로드
   const epicStoryData = useMemo(() => {
@@ -163,7 +174,7 @@ export default function DevelopmentView({
         (t: Task) => t.epicOrder === story.epicOrder && t.storyOrder === story.storyOrder
       ) || [];
 
-      if (storyTasks.length > 0 && storyTasks.every((t: Task) => t.status === 'completed')) {
+      if (storyTasks.length > 0 && storyTasks.every((t: Task) => getTaskProgressStatus(t).phase === 'completed')) {
         return sum + (story.storyPoints || 0);
       }
       return sum;
@@ -174,12 +185,16 @@ export default function DevelopmentView({
       totalPoints: totalStoryPoints,
       completedPoints: completedStoryPoints,
     };
-  }, [epicStoryData, scrumMasterData]);
+  }, [epicStoryData, scrumMasterData, executions]);
 
-  // 현재 실행 중인 에이전트 확인
+  // 현재 실행 중인 개발 에이전트 확인 (Epic & Story 제외)
   const latestExecution = useMemo(() => {
     const developmentAgents = ['scrum-master', 'developer', 'code-reviewer', 'tester'];
     const developmentExecutions = executions.filter(e => developmentAgents.includes(e.agentId));
+
+    // 실행 중인 에이전트 우선, 없으면 최근 완료된 에이전트
+    const runningExec = developmentExecutions.find(e => e.status === 'RUNNING');
+    if (runningExec) return runningExec;
 
     return developmentExecutions.length > 0
       ? developmentExecutions.reduce((latest, current) =>
@@ -187,6 +202,90 @@ export default function DevelopmentView({
         )
       : null;
   }, [executions]);
+
+  // Epic & Story가 실행 중인지 확인
+  const isEpicStoryRunning = useMemo(() => {
+    const epicStoryExec = executions.find(e => e.agentId === 'epic-story');
+    return epicStoryExec?.status === 'RUNNING';
+  }, [executions]);
+
+  // 스토리 실패 상태 감지
+  const storyFailure = useMemo(() => {
+    // Scrum Master 데이터 확인
+    const scrumMasterExec = executions.find(e => e.agentId === 'scrum-master');
+    if (!scrumMasterExec || !scrumMasterExec.output) return null;
+
+    const scrumMasterOutput = scrumMasterExec.output;
+    const tasks = scrumMasterOutput.tasks || [];
+
+    // 실패한 태스크가 있는지 확인
+    const failedTasks = tasks.filter((t: Task) => t.status === 'failed');
+    if (failedTasks.length === 0) return null;
+
+    // 진행 중인 에이전트가 있는지 확인
+    const hasRunningAgent = executions.some(e =>
+      ['developer', 'code-reviewer', 'tester'].includes(e.agentId) && e.status === 'RUNNING'
+    );
+
+    // 진행 중인 에이전트가 없고 실패한 태스크가 있으면 실패 상태
+    if (!hasRunningAgent && failedTasks.length > 0) {
+      // 실패한 태스크별 상세 에러 정보 수집
+      const tasksWithErrors = failedTasks.map((task: Task) => {
+        // 해당 태스크를 처리한 에이전트의 실행 기록 찾기
+        // developer, code-reviewer, tester 순으로 확인
+        const agentErrors = [];
+
+        for (const agentId of ['developer', 'code-reviewer', 'tester']) {
+          const agentExec = executions.find(e =>
+            e.agentId === agentId &&
+            e.status === 'COMPLETED' &&
+            e.output?.error?.taskId === task.id
+          );
+
+          if (agentExec?.error) {
+            agentErrors.push({
+              agentId,
+              agentName: agentExec.agentName,
+              error: agentExec.error,
+            });
+          }
+
+          // output 내부의 error도 확인
+          if (agentExec?.output?.error) {
+            const outputError = agentExec.output.error;
+            if (outputError.taskId === task.id && outputError.message) {
+              agentErrors.push({
+                agentId,
+                agentName: agentExec.agentName,
+                error: outputError,
+              });
+            }
+          }
+        }
+
+        return {
+          ...task,
+          errors: agentErrors,
+        };
+      });
+
+      return {
+        failedTasks: tasksWithErrors,
+        totalTasks: tasks.length,
+        failedCount: failedTasks.length,
+      };
+    }
+
+    return null;
+  }, [executions]);
+
+  // 실패 상태 감지 시 부모 컴포넌트에 알림
+  useEffect(() => {
+    // 재시도 중이면 실패 알림을 하지 않음 (중복 토스트 방지)
+    if (storyFailure && onStoryFailure && !isRetrying) {
+      onStoryFailure(storyFailure.failedTasks);
+    }
+  }, [storyFailure, onStoryFailure, isRetrying]);
 
   // Story의 현재 단계 판단
   const getStoryPhase = (story: Story): StoryPhase => {
@@ -244,6 +343,153 @@ export default function DevelopmentView({
     return labels[phase];
   };
 
+  // Task의 실제 진행 상태 판단 (Developer → Reviewer → Tester)
+  const getTaskProgressStatus = (task: Task): {
+    phase: 'pending' | 'development' | 'review' | 'testing' | 'completed' | 'failed';
+    label: string;
+    icon: string;
+    borderColor: string;
+    bgColor: string;
+  } => {
+    // Task가 실패한 경우
+    if (task.status === 'failed') {
+      return {
+        phase: 'failed',
+        label: '실패',
+        icon: '❌',
+        borderColor: 'border-red-500/40',
+        bgColor: 'bg-red-500/10',
+      };
+    }
+
+    // Developer 실행 결과 확인
+    const developerExec = executions.find(e =>
+      e.agentId === 'developer' &&
+      e.status === 'COMPLETED' &&
+      e.output?.completedTasks?.includes(task.id)
+    );
+
+    // Developer가 아직 완료하지 않은 경우
+    if (!developerExec) {
+      if (task.status === 'in-progress') {
+        return {
+          phase: 'development',
+          label: '개발 중',
+          icon: '🔨',
+          borderColor: 'border-yellow-500/40',
+          bgColor: 'bg-yellow-500/10',
+        };
+      }
+      return {
+        phase: 'pending',
+        label: '대기 중',
+        icon: '⭕',
+        borderColor: 'border-white/20',
+        bgColor: 'bg-white/5',
+      };
+    }
+
+    // Developer에서 실패한 경우
+    if (developerExec?.output?.error?.taskId === task.id || developerExec?.error) {
+      return {
+        phase: 'failed',
+        label: '개발 실패',
+        icon: '❌',
+        borderColor: 'border-red-500/40',
+        bgColor: 'bg-red-500/10',
+      };
+    }
+
+    // Code Reviewer 실행 결과 확인
+    const reviewerExec = executions.find(e =>
+      e.agentId === 'code-reviewer' &&
+      e.status === 'COMPLETED' &&
+      e.output?.completedTasks?.includes(task.id)
+    );
+
+    // Code Reviewer가 아직 실행되지 않은 경우 (개발 완료)
+    if (!reviewerExec) {
+      // Reviewer가 현재 실행 중인지 확인
+      const reviewerRunning = executions.find(e => e.agentId === 'code-reviewer' && e.status === 'RUNNING');
+      if (reviewerRunning) {
+        return {
+          phase: 'review',
+          label: '리뷰 중',
+          icon: '🔍',
+          borderColor: 'border-blue-500/40',
+          bgColor: 'bg-blue-500/10',
+        };
+      }
+      return {
+        phase: 'development',
+        label: '개발 완료',
+        icon: '🔨',
+        borderColor: 'border-purple-500/40',
+        bgColor: 'bg-purple-500/10',
+      };
+    }
+
+    // Reviewer에서 실패한 경우
+    if (reviewerExec?.output?.error?.taskId === task.id) {
+      return {
+        phase: 'failed',
+        label: '리뷰 실패',
+        icon: '❌',
+        borderColor: 'border-red-500/40',
+        bgColor: 'bg-red-500/10',
+      };
+    }
+
+    // Tester 실행 결과 확인
+    const testerExec = executions.find(e =>
+      e.agentId === 'tester' &&
+      e.status === 'COMPLETED' &&
+      e.output?.completedTasks?.includes(task.id)
+    );
+
+    // Tester가 아직 실행되지 않은 경우 (리뷰 완료)
+    if (!testerExec) {
+      // Tester가 현재 실행 중인지 확인
+      const testerRunning = executions.find(e => e.agentId === 'tester' && e.status === 'RUNNING');
+      if (testerRunning) {
+        return {
+          phase: 'testing',
+          label: '테스트 중',
+          icon: '🧪',
+          borderColor: 'border-cyan-500/40',
+          bgColor: 'bg-cyan-500/10',
+        };
+      }
+      return {
+        phase: 'review',
+        label: '리뷰 완료',
+        icon: '🔍',
+        borderColor: 'border-blue-500/40',
+        bgColor: 'bg-blue-500/10',
+      };
+    }
+
+    // Tester에서 실패한 경우
+    if (testerExec?.output?.error?.taskId === task.id) {
+      return {
+        phase: 'failed',
+        label: '테스트 실패',
+        icon: '❌',
+        borderColor: 'border-red-500/40',
+        bgColor: 'bg-red-500/10',
+      };
+    }
+
+    // 모든 단계 완료
+    return {
+      phase: 'completed',
+      label: '완료',
+      icon: '✅',
+      borderColor: 'border-green-500/40 shadow-glow',
+      bgColor: 'bg-green-500/10',
+    };
+  };
+
   const startDevelopment = async () => {
     console.log('[Development] Starting development workflow...');
     setDevelopmentStarted(true);
@@ -274,14 +520,14 @@ export default function DevelopmentView({
     });
   };
 
-  // 로그 스크롤을 하단으로 고정
+  // 로그 스크롤을 하단으로 고정 (일시정지 중일 때 제외)
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (logContainerRef.current && agentLogs.length > 0) {
+    if (logContainerRef.current && agentLogs.length > 0 && !autoScrollPaused) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [agentLogs]);
+  }, [agentLogs, autoScrollPaused]);
 
   useEffect(() => {
     const fetchLogs = async () => {
@@ -324,7 +570,8 @@ export default function DevelopmentView({
     };
   }, [showAgentLogs, logLineCount, showPollingLogs]);
 
-  if (!developmentStarted && !latestExecution && !scrumMasterData) {
+  // Epic & Story 생성 중이거나, 개발이 시작되지 않았고 실행 중인 에이전트가 없을 때 초기 화면 표시
+  if (isEpicStoryRunning || (!developmentStarted && !latestExecution && !scrumMasterData)) {
     return (
       <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
         <div className="text-center py-12">
@@ -356,6 +603,29 @@ export default function DevelopmentView({
               <h3 className="text-white font-semibold mb-1">Tester</h3>
               <p className="text-white/60 text-sm">UI/API/DB 테스트</p>
             </div>
+          </div>
+
+          {/* 재시도 횟수 설정 */}
+          <div className="mb-6 flex items-center justify-center gap-4">
+            <span className="text-white/80 text-sm font-medium">최대 재시도 횟수:</span>
+            <div className="flex items-center gap-2 bg-white/10 rounded-lg px-4 py-2 border border-white/20">
+              <button
+                onClick={() => setMaxRetries(Math.max(1, maxRetries - 1))}
+                disabled={maxRetries <= 1}
+                className="w-7 h-7 flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white text-sm rounded transition-all font-bold"
+              >
+                -
+              </button>
+              <span className="text-white text-lg font-semibold w-8 text-center">{maxRetries}</span>
+              <button
+                onClick={() => setMaxRetries(Math.min(5, maxRetries + 1))}
+                disabled={maxRetries >= 5}
+                className="w-7 h-7 flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white text-sm rounded transition-all font-bold"
+              >
+                +
+              </button>
+            </div>
+            <span className="text-white/50 text-xs">(최대 5회)</span>
           </div>
 
           <button
@@ -394,6 +664,7 @@ export default function DevelopmentView({
                 {/* 일시정지/재개 버튼 - 상호 배타적 표시 */}
                 {(() => {
                   const isRunning = latestExecution?.status === 'RUNNING';
+                  const isPaused = !isRunning && scrumMasterData?.tasks?.some((t: Task) => t.status === 'completed');
                   return isRunning ? (
                     onPauseDevelopment && (
                       <button
@@ -404,17 +675,38 @@ export default function DevelopmentView({
                         <Pause size={16} />
                       </button>
                     )
-                  ) : (
-                    onResumeDevelopment && (
-                      <button
-                        onClick={onResumeDevelopment}
-                        className="p-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-all border-2 border-green-500/30"
-                        title="개발 재개"
-                      >
-                        <Play size={16} />
-                      </button>
-                    )
-                  );
+                  ) : isPaused ? (
+                    <div className="flex items-center gap-2">
+                      {/* 재시도 횟수 설정 - 일시정지 상태일 때만 표시 */}
+                      <div className="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1 border border-white/20">
+                        <span className="text-white/70 text-xs">재시도:</span>
+                        <button
+                          onClick={() => setMaxRetries(Math.max(1, maxRetries - 1))}
+                          disabled={maxRetries <= 1}
+                          className="w-5 h-5 flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white text-xs rounded transition-all"
+                        >
+                          -
+                        </button>
+                        <span className="text-white text-sm font-semibold w-4 text-center">{maxRetries}</span>
+                        <button
+                          onClick={() => setMaxRetries(Math.min(5, maxRetries + 1))}
+                          disabled={maxRetries >= 5}
+                          className="w-5 h-5 flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white text-xs rounded transition-all"
+                        >
+                          +
+                        </button>
+                      </div>
+                      {onResumeDevelopment && (
+                        <button
+                          onClick={() => onResumeDevelopment()}
+                          className="p-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-all border-2 border-green-500/30"
+                          title="개발 재개"
+                        >
+                          <Play size={16} />
+                        </button>
+                      )}
+                    </div>
+                  ) : null;
                 })()}
               </div>
             </div>
@@ -431,7 +723,8 @@ export default function DevelopmentView({
               </div>
             </div>
 
-            {scrumMasterData?.currentEpic && scrumMasterData?.currentStory ? (
+            {/* "Currently Working On"은 실제 개발이 시작되었을 때만 표시 */}
+            {!isEpicStoryRunning && scrumMasterData?.currentEpic && scrumMasterData?.currentStory && scrumMasterData?.tasks?.length > 0 ? (
               <div className="bg-white/5 rounded-lg p-3 border border-white/10">
                 <p className="text-white/50 text-xs mb-1 font-medium">🎯 Currently Working On:</p>
                 <p className="text-white text-sm font-medium">
@@ -453,7 +746,7 @@ export default function DevelopmentView({
           </div>
 
           {/* 현재 실행 중인 에이전트 */}
-          {latestExecution && latestExecution.status === 'RUNNING' && (
+          {!storyFailure && latestExecution && latestExecution.status === 'RUNNING' && (
             <div className="flex items-center gap-3 py-3 px-4 bg-yellow-500/10 border-2 border-yellow-500/40 rounded-xl animate-pulse-glow shadow-glow">
               <div className="animate-spin w-5 h-5 border-3 border-yellow-400 border-t-transparent rounded-full"></div>
               <div className="flex-1">
@@ -497,7 +790,7 @@ export default function DevelopmentView({
             {epicsWithStories.map((epic: any, epicIndex: number) => {
               const totalStories = epic.stories.length;
               const completedStories = epic.stories.filter((s: Story) =>
-                s.tasks.length > 0 && s.tasks.every((t: Task) => t.status === 'completed')
+                s.tasks.length > 0 && s.tasks.every((t: Task) => getTaskProgressStatus(t).phase === 'completed')
               ).length;
               const epicProgress = totalStories > 0 ? (completedStories / totalStories) * 100 : 0;
               const isCurrentEpic = scrumMasterData?.currentEpic?.order === epic.order;
@@ -544,9 +837,11 @@ export default function DevelopmentView({
                   <div className="ml-5 mt-2 space-y-2">
                     {epic.stories.map((story: any, storyIndex: number) => {
                       const storyTasks = story.tasks || [];
-                      const allTasksCompleted = storyTasks.length > 0 && storyTasks.every((t: Task) => t.status === 'completed');
-                      const someTasksCompleted = storyTasks.some((t: Task) => t.status === 'completed');
+                      const allTasksCompleted = storyTasks.length > 0 && storyTasks.every((t: Task) => getTaskProgressStatus(t).phase === 'completed');
+                      const someTasksCompleted = storyTasks.some((t: Task) => getTaskProgressStatus(t).phase !== 'pending' && getTaskProgressStatus(t).phase !== 'failed');
                       const isCurrentStory = scrumMasterData?.currentStory?.storyOrder === story.storyOrder;
+                      // 일시정지 상태이거나 실패 상태이면 깜빡이지 않음
+                      const shouldPulse = isCurrentStory && !isDevelopmentPaused && !storyFailure;
 
                       return (
                         <div
@@ -559,9 +854,9 @@ export default function DevelopmentView({
                             selectedEpicIndex === epicIndex && selectedStoryIndex === storyIndex
                               ? 'bg-purple-500/40 border-purple-500 shadow-glow'
                               : isCurrentStory
-                              ? 'bg-yellow-500/20 border-yellow-500/40 animate-pulse-glow'
+                              ? 'bg-yellow-500/20 border-yellow-500/40'
                               : 'bg-white/5 border-transparent hover:bg-white/10 hover:border-white/20'
-                          }`}
+                          } ${shouldPulse ? 'animate-pulse-glow' : ''}`}
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-white/90 text-sm font-medium">{story.title}</span>
@@ -574,8 +869,9 @@ export default function DevelopmentView({
                               {allTasksCompleted && (
                                 <span className="text-green-400 text-base animate-scale-in">✓</span>
                               )}
-                              {someTasksCompleted && !allTasksCompleted && (
-                                <span className="text-yellow-400 text-base animate-pulse">⏳</span>
+                              {/* 일시정지 또는 실패 상태이면 스피너 숨김 */}
+                              {someTasksCompleted && !allTasksCompleted && !isDevelopmentPaused && !storyFailure && (
+                                <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
                               )}
                             </div>
                           </div>
@@ -620,50 +916,70 @@ export default function DevelopmentView({
           {selectedEpicIndex !== null && selectedStoryIndex !== null ? (
             <div className="space-y-3 max-h-[550px] overflow-y-auto pr-2 custom-scroll">
               {epicsWithStories[selectedEpicIndex]?.stories[selectedStoryIndex]?.tasks.map((task: Task) => {
+                const progressStatus = getTaskProgressStatus(task);
                 const isTaskRunning = latestExecution?.agentId === 'developer' && task.status === 'in-progress';
 
                 return (
                   <div
                     key={task.id}
-                    className={`p-4 rounded-xl border-2 transition-all shadow-card ${
-                      task.status === 'completed'
-                        ? 'bg-green-500/10 border-green-500/40 shadow-glow'
-                        : task.status === 'failed'
-                        ? 'bg-red-500/10 border-red-500/40'
-                        : task.status === 'in-progress'
-                        ? 'bg-yellow-500/10 border-yellow-500/40 animate-pulse-glow'
-                        : 'bg-white/5 border-white/20 hover:bg-white/10 hover:border-white/30'
+                    className={`p-4 rounded-xl border-2 transition-all shadow-card ${progressStatus.bgColor} ${progressStatus.borderColor} ${
+                      progressStatus.phase === 'development' && task.status === 'in-progress' ? 'animate-pulse-glow' : ''
                     }`}
                   >
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          {task.status === 'completed' && (
-                            <span className="text-green-400 text-lg animate-scale-in">✓</span>
-                          )}
-                          {task.status === 'failed' && (
-                            <span className="text-red-400 text-lg">✗</span>
-                          )}
-                          {task.status === 'in-progress' && (
-                            <span className="text-yellow-400 text-lg animate-pulse">⏳</span>
-                          )}
-                          {task.status === 'pending' && (
-                            <span className="text-gray-400 text-lg">○</span>
-                          )}
-                          <span className="text-white text-base font-semibold truncate flex-1">{task.title}</span>
+                    <div className="flex items-start gap-3">
+                      {/* Status Icon */}
+                      <div className="flex-shrink-0 mt-1">
+                        {progressStatus.phase === 'development' && task.status === 'in-progress' ? (
+                          <div className="w-5 h-5 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+                        ) : (
+                          <span className={`text-lg ${progressStatus.phase === 'completed' ? 'text-green-400 animate-scale-in' : progressStatus.phase === 'failed' ? 'text-red-400' : 'text-white/70'}`}>
+                            {progressStatus.icon}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Task Content */}
+                      <div className="flex-1 min-w-0 pt-0.5 pl-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-white text-base font-semibold truncate">{task.title}</span>
                           {isTaskRunning && (
                             <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
                           )}
                         </div>
-                        <p className="text-white/70 text-sm ml-7 break-words">{task.description}</p>
+                        <p className="text-white/70 text-sm break-words">{task.description}</p>
+
+                        {/* Bottom Row: Priority Badge + Progress Status */}
+                        <div className="mt-2 flex items-center gap-2">
+                          {/* Priority Badge */}
+                          <div className={`px-2 py-0.5 rounded-md text-xs font-bold border-2 flex-shrink-0 ${
+                            task.priority === 'high'
+                              ? 'bg-red-500/90 text-white border-red-400'
+                              : task.priority === 'medium'
+                              ? 'bg-yellow-500/90 text-white border-yellow-400'
+                              : 'bg-blue-500/90 text-white border-blue-400'
+                          }`}>
+                            {task.priority === 'high' ? 'HIGH' : task.priority === 'medium' ? 'MED' : 'LOW'}
+                          </div>
+
+                          {/* Progress Status Label */}
+                          <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium ${
+                            progressStatus.phase === 'completed'
+                              ? 'bg-green-500/20 text-green-300'
+                              : progressStatus.phase === 'failed'
+                              ? 'bg-red-500/20 text-red-300'
+                              : progressStatus.phase === 'testing'
+                              ? 'bg-cyan-500/20 text-cyan-300'
+                              : progressStatus.phase === 'review'
+                              ? 'bg-blue-500/20 text-blue-300'
+                              : progressStatus.phase === 'development'
+                              ? 'bg-purple-500/20 text-purple-300'
+                              : 'bg-gray-500/20 text-gray-300'
+                          }`}>
+                            <span>{progressStatus.icon}</span>
+                            <span>{progressStatus.label}</span>
+                          </div>
+                        </div>
                       </div>
-                      <span className={`text-sm px-3 py-1.5 rounded-lg font-semibold border-2 whitespace-nowrap ml-2 ${
-                        task.priority === 'high' ? 'bg-red-500/20 text-red-300 border-red-500/50 shadow-glow' :
-                        task.priority === 'medium' ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/50' :
-                        'bg-blue-500/20 text-blue-300 border-blue-500/50'
-                      }`}>
-                        {task.priority.toUpperCase()}
-                      </span>
                     </div>
                   </div>
                 );
@@ -681,6 +997,161 @@ export default function DevelopmentView({
 
       {/* ========== 3열: 에이전트 실시간 출력 ========== */}
       <div className="lg:col-span-2 space-y-5">
+        {/* Story 실패 알림 카드 */}
+        {storyFailure && (
+          <div className="bg-gradient-to-br from-red-500/10 to-orange-500/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-red-500/40 shadow-glow">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center border-2 border-red-500/40">
+                <span className="text-3xl">⚠️</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-red-300 text-base font-bold">Story 개발 실패</h3>
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-pulse"></div>
+                  </div>
+                  {/* 전체 복사 버튼 */}
+                  <button
+                    onClick={() => {
+                      // 실패 메시지 전체 생성
+                      const failureText = storyFailure.failedTasks.map((task: any) => {
+                        let text = `Task: ${task.title}\n`;
+                        text += `Description: ${task.description}\n`;
+
+                        if (task.errors && task.errors.length > 0) {
+                          task.errors.forEach((errorInfo: any) => {
+                            text += `\n[${errorInfo.agentName} (${errorInfo.agentId})]\n`;
+                            text += `Error: ${errorInfo.error.message || '알 수 없는 오류'}\n`;
+                            if (errorInfo.error.stackTrace) {
+                              text += `Stack Trace:\n${errorInfo.error.stackTrace}\n`;
+                            }
+                          });
+                        } else {
+                          text += `\n⚠️ 상세 에러 정보를 찾을 수 없습니다.\n`;
+                        }
+
+                        text += '\n' + '='.repeat(60) + '\n';
+                        return text;
+                      }).join('\n');
+
+                      // 클립보드에 복사
+                      navigator.clipboard.writeText(failureText).then(() => {
+                        toast.showSuccess('실패 메시지가 클립보드에 복사되었습니다.');
+                      }).catch(() => {
+                        toast.showError('클립보드 복사에 실패했습니다.');
+                      });
+                    }}
+                    className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white text-xs rounded-lg border border-white/20 transition-all flex items-center gap-1.5"
+                    title="전체 실패 메시지 클립보드에 복사"
+                  >
+                    <span>📋</span>
+                    <span>전체 복사</span>
+                  </button>
+                </div>
+                <p className="text-white/90 text-sm mb-4">
+                  {storyFailure.failedCount}개의 Task가 실패하여 개발이 중단되었습니다.
+                </p>
+
+                {/* 실패한 Task 목록 - 상세 정보 포함 */}
+                <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scroll">
+                  {storyFailure.failedTasks.map((task: any, index: number) => (
+                    <div key={task.id} className="bg-red-500/10 rounded-lg p-3 border border-red-500/30">
+                      {/* Task 헤더 */}
+                      <div className="flex items-start gap-2 mb-2">
+                        <span className="text-red-400 flex-shrink-0 text-lg">✗</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-sm font-semibold">{task.title}</p>
+                          <p className="text-white/70 text-xs mt-1">{task.description}</p>
+                        </div>
+                      </div>
+
+                      {/* 에러 상세 정보 */}
+                      {task.errors && task.errors.length > 0 ? (
+                        <div className="mt-2 space-y-2">
+                          {task.errors.map((errorInfo: any, errorIdx: number) => (
+                            <div key={errorIdx} className="bg-black/20 rounded-lg p-2 border border-red-500/20">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs text-red-400 font-medium">{errorInfo.agentName}</span>
+                                <span className="text-xs text-white/50">•</span>
+                                <span className="text-xs text-white/40 font-mono">{errorInfo.agentId}</span>
+                              </div>
+                              <div className="text-red-300 text-xs font-mono bg-black/30 rounded p-2 whitespace-pre-wrap break-words">
+                                {errorInfo.error.message || errorInfo.error.stackTrace || '알 수 없는 오류'}
+                              </div>
+                              {errorInfo.error.stackTrace && (
+                                <details className="mt-2">
+                                  <summary className="text-xs text-white/60 cursor-pointer hover:text-white/80 transition-colors">
+                                    Stack Trace 보기
+                                  </summary>
+                                  <pre className="text-xs text-white/40 font-mono mt-2 whitespace-pre-wrap break-all">
+                                    {errorInfo.error.stackTrace}
+                                  </pre>
+                                </details>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-yellow-300 bg-yellow-500/10 rounded p-2 border border-yellow-500/20">
+                          ⚠️ 상세 에러 정보를 찾을 수 없습니다. Agent Output 탭에서 전체 로그를 확인하세요.
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* 재시도 버튼 */}
+                <button
+                  onClick={async () => {
+                    console.log('[Development] Retry failed tasks:', storyFailure.failedTasks);
+
+                    // 재시도 중 플래그 설정 (실패 토스트 중복 방지)
+                    setIsRetrying(true);
+
+                    try {
+                      // 실패한 Task 재시도 API 호출
+                      const response = await fetch('http://localhost:4000/api/magic/retry-failed-tasks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ projectId }),
+                      });
+
+                      if (!response.ok) {
+                        const error = await response.json();
+                        console.error('[Development] Retry failed:', error);
+                        toast.showError(`재시도 실패: ${error.error?.message || '알 수 없는 오류'}`);
+                        setIsRetrying(false); // 실패 시 플래그 해제
+                        return;
+                      }
+
+                      console.log('[Development] Retry initiated successfully');
+                      toast.showSuccess('실패한 Task 재시도를 시작했습니다.');
+
+                      // 실패 상태 초기화
+                      if (onClearFailure) {
+                        onClearFailure();
+                      }
+
+                      // 일정 시간 후 플래그 해제 (개발이 시작될 때까지 실패 알림 방지)
+                      setTimeout(() => {
+                        setIsRetrying(false);
+                      }, 5000);
+                    } catch (error) {
+                      console.error('[Development] Retry error:', error);
+                      toast.showError('재시도 중 오류가 발생했습니다.');
+                      setIsRetrying(false); // 에러 시 플래그 해제
+                    }
+                  }}
+                  className="mt-3 w-full px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-sm font-medium transition-all border-2 border-red-500/30 hover:border-red-500/50 flex items-center justify-center gap-2"
+                >
+                  <span>🔄</span>
+                  실패한 Task 재시도
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Current Agent Activity (새로운 카드) */}
         {latestExecution && latestExecution.status === 'RUNNING' && currentActivity?.activity && (
           <div className="bg-gradient-to-br from-yellow-500/10 to-amber-500/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-yellow-500/40 shadow-glow animate-pulse-glow">
@@ -710,6 +1181,18 @@ export default function DevelopmentView({
               Agent Output
             </h3>
             <div className="flex items-center gap-2">
+              {/* 자동 스크롤 일시정지 토글 */}
+              <button
+                onClick={() => setAutoScrollPaused(!autoScrollPaused)}
+                className={`px-3 py-1.5 text-xs rounded-lg transition-all border-2 font-medium ${
+                  autoScrollPaused
+                    ? 'bg-red-500/20 border-red-500/50 text-red-300'
+                    : 'bg-green-500/20 border-green-500/50 text-green-300'
+                }`}
+                title={autoScrollPaused ? '로그 자동 스크롤 재생' : '로그 자동 스크롤 일시정지'}
+              >
+                {autoScrollPaused ? <Pause size={14} /> : <Play size={14} />}
+              </button>
               {/* 폴링 로그 토글 */}
               <button
                 onClick={() => setShowPollingLogs(!showPollingLogs)}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
@@ -63,11 +63,39 @@ export default function MagicPage() {
   const [repoName, setRepoName] = useState('');
   const [githubPushLoading, setGithubPushLoading] = useState(false);
   const [project, setProject] = useState<any>(null);
+  const [storyFailed, setStoryFailed] = useState<boolean>(false);
+  const [notifiedFailure, setNotifiedFailure] = useState<boolean>(false); // 중복 알림 방지
   const [currentActivity, setCurrentActivity] = useState<{
     activity: string | null;
     agentName: string | null;
     agentId: string | null;
   }>({ activity: null, agentName: null, agentId: null });
+
+  // localStorage에서 실패 상태 복원 (클라이언트 사이드에서만 실행)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(`story-failed-${projectId}`);
+      if (saved === 'true') {
+        setStoryFailed(true);
+      }
+    }
+  }, [projectId]);
+
+  // 개발 일시정지 상태 계산
+  const isDevelopmentPaused = useMemo(() => {
+    const scrumMasterExec = agentExecutions.find((e: any) => e.agentId === 'scrum-master' && e.status === 'COMPLETED');
+    if (!scrumMasterExec?.output?.tasks) return false;
+
+    const tasks = scrumMasterExec.output.tasks;
+    const hasRunningAgent = agentExecutions.some((e: any) =>
+      ['developer', 'code-reviewer', 'tester'].includes(e.agentId) && e.status === 'RUNNING'
+    );
+    const hasCompletedTasks = tasks.some((t: any) => t.status === 'completed');
+    const hasPendingTasks = tasks.some((t: any) => t.status === 'pending');
+
+    // 실행 중인 에이전트가 없고, 완료된 태스크와 대기 중인 태스크가 있으면 일시정지 상태
+    return !hasRunningAgent && hasCompletedTasks && hasPendingTasks;
+  }, [agentExecutions]);
 
   // Agent 상태 조회
   const fetchStatus = async () => {
@@ -268,6 +296,9 @@ export default function MagicPage() {
   const startDevelopment = async () => {
     console.log('[Magic Page] Starting development workflow...');
 
+    // 실패 상태 초기화
+    clearStoryFailure();
+
     try {
       // 개발 루프 시작
       await fetch(`http://localhost:4000/api/magic/start-development`, {
@@ -322,6 +353,36 @@ export default function MagicPage() {
     } catch (error) {
       console.error('[Magic Page] Failed to resume development:', error);
       toast.showError('재개 실패');
+    }
+  };
+
+  // Story 실패 핸들러
+  const handleStoryFailure = (failedTasks: any[]) => {
+    console.log('[Magic Page] Story failed with tasks:', failedTasks);
+
+    // 이미 실패 상태이고 알림을 했으면 중복 알림 방지
+    if (storyFailed && notifiedFailure) {
+      return;
+    }
+
+    setStoryFailed(true);
+    setNotifiedFailure(true);
+
+    // localStorage에 실패 상태 저장
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`story-failed-${projectId}`, 'true');
+    }
+
+    toast.showError(`Story 개발 실패: ${failedTasks.length}개의 Task가 실패했습니다.`);
+  };
+
+  // Story 실패 상태 복구 핸들러 (개발 재시작 등)
+  const clearStoryFailure = () => {
+    setStoryFailed(false);
+    setNotifiedFailure(false);
+
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(`story-failed-${projectId}`);
     }
   };
 
@@ -434,15 +495,18 @@ export default function MagicPage() {
               const hasRunningAgent = isDevelopmentTab && executions.some((e: any) => e.status === 'RUNNING');
 
               // 개발 탭 상태 판단
-              let developmentStatus: 'running' | 'completed' | 'paused' | 'pending' | null = null;
+              let developmentStatus: 'running' | 'completed' | 'paused' | 'pending' | 'failed' | null = null;
               if (isDevelopmentTab) {
                 // Scrum Master 실행 결과 확인
                 const scrumMasterExec = agentExecutions.find((e: any) => e.agentId === 'scrum-master' && e.status === 'COMPLETED');
                 const hasCompletedTasks = scrumMasterExec?.output?.tasks?.some((t: any) => t.status === 'completed');
                 const hasPendingTasks = scrumMasterExec?.output?.tasks?.some((t: any) => t.status === 'pending');
+                const hasFailedTasks = scrumMasterExec?.output?.tasks?.some((t: any) => t.status === 'failed');
                 const allTasksCompleted = scrumMasterExec?.output?.tasks?.every((t: any) => t.status === 'completed');
 
-                if (hasRunningAgent) {
+                if (hasFailedTasks && !hasRunningAgent) {
+                  developmentStatus = 'failed';
+                } else if (hasRunningAgent) {
                   developmentStatus = 'running';
                 } else if (allTasksCompleted) {
                   developmentStatus = 'completed';
@@ -474,6 +538,11 @@ export default function MagicPage() {
                   {/* 개발 탭: 완료 표시 (모든 Task 완료) */}
                   {isDevelopmentTab && developmentStatus === 'completed' && (
                     <span className="text-xs text-green-400">✓</span>
+                  )}
+
+                  {/* 개발 탭: 실패 표시 (Task 실패) */}
+                  {isDevelopmentTab && developmentStatus === 'failed' && (
+                    <span className="text-xs text-red-400" title="Story 개발 실패">⚠️</span>
                   )}
 
                   {/* 개발 탭: 중단 표시 (일부만 완료) */}
@@ -640,6 +709,9 @@ export default function MagicPage() {
             onStartDevelopment={startDevelopment}
             onPauseDevelopment={pauseDevelopment}
             onResumeDevelopment={resumeDevelopment}
+            onStoryFailure={handleStoryFailure}
+            onClearFailure={clearStoryFailure}
+            isDevelopmentPaused={isDevelopmentPaused}
           />
         )}
 

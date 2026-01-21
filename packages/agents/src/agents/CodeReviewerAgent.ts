@@ -115,6 +115,9 @@ export class CodeReviewerAgent extends Agent {
         issues: reviewResult.summary.totalIssues,
       });
 
+      // Task 상태를 testing으로 변경 (리뷰 완료 후 테스트 단계로)
+      await this.updateTaskStatus(input.projectId, 'testing');
+
       return {
         status: AgentStatus.COMPLETED,
         output: reviewResult,
@@ -478,6 +481,49 @@ Category: functionality, security, performance, code-quality, type-safety, best-
       }
     } catch (error) {
       console.error('[CodeReviewer] Failed to update progress:', error);
+    }
+  }
+
+  private async updateTaskStatus(projectId: string, status: 'pending' | 'developing' | 'reviewing' | 'testing' | 'completed' | 'failed'): Promise<void> {
+    try {
+      // Scrum Master 실행 기록 찾기
+      const scrumMasterExec = await prisma.agentExecution.findFirst({
+        where: {
+          projectId,
+          agentId: 'scrum-master',
+        },
+        orderBy: {
+          startedAt: 'desc',
+        },
+      });
+
+      if (!scrumMasterExec || !scrumMasterExec.output) {
+        await this.log('Scrum Master 실행 결과를 찾을 수 없어 Task 상태 업데이트 불가');
+        return;
+      }
+
+      // 'reviewing' 상태인 첫 번째 task 찾기 (현재 리뷰 중인 task)
+      const output = scrumMasterExec.output as any;
+      const task = output.tasks?.find((t: any) => t.status === 'reviewing');
+
+      if (task) {
+        task.status = status;
+
+        // 데이터베이스 업데이트
+        await prisma.agentExecution.update({
+          where: { id: scrumMasterExec.id },
+          data: {
+            output: output as any,
+          },
+        });
+
+        await this.log('Task 상태 업데이트 완료', {
+          taskId: task.id,
+          status,
+        });
+      }
+    } catch (error) {
+      await this.logError(error as Error);
     }
   }
 }

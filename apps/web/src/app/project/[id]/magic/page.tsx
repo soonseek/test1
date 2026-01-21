@@ -318,6 +318,36 @@ export default function MagicPage() {
     }
   };
 
+  // 처음부터 다시 개발
+  const handleResetDevelopment = async () => {
+    console.log('[Magic Page] Resetting development from scratch...');
+
+    try {
+      const response = await fetch(`http://localhost:4000/api/magic/reset-development`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || '개발 초기화 실패');
+      }
+
+      const result = await response.json();
+      console.log('[Magic Page] Development reset completed:', result);
+
+      toast.showSuccess('개발이 초기화되었습니다. 요구사항 분석, Epic & Story는 유지됩니다.');
+
+      // 개발 탭으로 전환 및 상태 새로고침
+      setActiveTab('development');
+      await fetchStatus();
+    } catch (error: any) {
+      console.error('[Magic Page] Failed to reset development:', error);
+      toast.showError(`개발 초기화 실패: ${error.message}`);
+    }
+  };
+
   // 개발 일시정지
   const pauseDevelopment = async () => {
     console.log('[Magic Page] Pausing development...');
@@ -711,6 +741,7 @@ export default function MagicPage() {
             onResumeDevelopment={resumeDevelopment}
             onStoryFailure={handleStoryFailure}
             onClearFailure={clearStoryFailure}
+            onResetDevelopment={handleResetDevelopment}
             isDevelopmentPaused={isDevelopmentPaused}
           />
         )}

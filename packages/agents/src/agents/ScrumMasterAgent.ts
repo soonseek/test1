@@ -15,7 +15,7 @@ interface Task {
   id: string; // task-1-1-1 (epic-story-task)
   title: string;
   description: string;
-  status: 'pending' | 'in-progress' | 'completed' | 'failed';
+  status: 'pending' | 'developing' | 'reviewing' | 'testing' | 'completed' | 'failed';
   assignedTo: 'developer' | 'code-reviewer' | 'tester';
   priority: 'high' | 'medium' | 'low';
   storyId: string; // story-1-1
@@ -59,6 +59,7 @@ interface ScrumMasterOutput {
 
 export class ScrumMasterAgent extends Agent {
   private anthropic: Anthropic;
+  private currentExecutionId: string | null = null;
 
   constructor() {
     super({
@@ -82,6 +83,13 @@ export class ScrumMasterAgent extends Agent {
     this.anthropic = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
+  }
+
+  /**
+   * Orchestrator에서 호출: 현재 실행 ID 설정
+   */
+  setExecutionId(executionId: string): void {
+    this.currentExecutionId = executionId;
   }
 
   async execute(input: ScrumMasterInput): Promise<AgentExecutionResult> {
@@ -139,8 +147,8 @@ export class ScrumMasterAgent extends Agent {
         throw new Error('Scrum Master output 생성 실패');
       }
 
-      // 6. DB 저장
-      await this.saveToDatabase(input.projectId, output);
+      // 6. DB 저장은 Orchestrator가 담당하므로 생략
+      // await this.saveToDatabase(input.projectId, output);
 
       await this.log('Scrum Master 작업 완료', {
         currentPhase: output.currentPhase,
@@ -208,7 +216,7 @@ export class ScrumMasterAgent extends Agent {
   }
 
   private async getPreviousExecution(projectId: string) {
-    return await prisma.agentExecution.findMany({
+    const executions = await prisma.agentExecution.findMany({
       where: {
         projectId,
         agentId: { in: ['scrum-master', 'developer', 'code-reviewer', 'tester'] },
@@ -216,8 +224,15 @@ export class ScrumMasterAgent extends Agent {
       orderBy: {
         startedAt: 'desc',
       },
-      take: 10,
+      take: 30,
     });
+
+    // 현재 실행 ID를 제외 (자기 자신을 읽지 않기 위해)
+    if (this.currentExecutionId) {
+      return executions.filter(e => e.id !== this.currentExecutionId);
+    }
+
+    return executions;
   }
 
   private determinePhase(previousExecutions: any[], epicStoryData: any): 'task-creation' | 'review-analysis' | 'test-analysis' | 'epic-testing' | 'integration-testing' | 'completed' {
@@ -386,13 +401,14 @@ export class ScrumMasterAgent extends Agent {
     const storyTaskCompletion = new Map<string, { totalTasks: number; completedTasks: number; storyKey: string }>();
 
     // 1. 먼저 Scrum Master 실행에서 각 스토리의 총 태스크 수 확인
+    // 가장 최신 Scrum Master 실행만 사용 (역순으로 확인하며 첫 번째 것만 사용)
     for (const exec of previousExecution) {
       if (exec.agentId === 'scrum-master') {
         const output = exec.output as any;
         if (output && output.currentStory && output.tasks && output.tasks.length > 0) {
           const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
 
-          // 이전에 기록된 적이 없는 경우에만 총 태스크 수 기록
+          // 가장 최신(최근) 실행만 기록
           if (!storyTaskCompletion.has(storyKey)) {
             storyTaskCompletion.set(storyKey, {
               totalTasks: output.tasks.length,
@@ -407,30 +423,47 @@ export class ScrumMasterAgent extends Agent {
       }
     }
 
-    // 2. Developer 실행 결과에서 완료된 태스크 수 확인
+    // 2. Scrum Master 실행 결과에서 완료된 태스크 수 확인 (Developer 실행 횟수가 아닌 실제 task status 확인)
+    // storyKey별로 가장 최신의 Scrum Master 실행 결과를 저장
+    const latestScrumMasterOutputs = new Map<string, any>();
+
     for (const exec of previousExecution) {
-      if (exec.agentId === 'developer' && exec.status === 'COMPLETED') {
+      if (exec.agentId === 'scrum-master') {
         const output = exec.output as any;
-        if (output && output.currentTask && output.currentStory) {
+        if (output && output.currentStory) {
           const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
-          const completion = storyTaskCompletion.get(storyKey);
+          // 같은 story에 대한 여러 실행 중 가장 최신 것(나중에 실행된 것)만 저장
+          latestScrumMasterOutputs.set(storyKey, output);
+        }
+      }
+    }
 
-          if (completion) {
-            completion.completedTasks++;
+    // 각 story별 완료 상태 확인
+    for (const [storyKey, output] of latestScrumMasterOutputs) {
+      if (output.tasks && output.tasks.length > 0) {
+        const completion = storyTaskCompletion.get(storyKey);
 
-            // 모든 태스크가 완료되었는지 확인
-            if (completion.completedTasks >= completion.totalTasks) {
-              completedStories.add(storyKey);
-              await this.log(`✅ Story 완료 확인: ${storyKey}`, {
-                totalTasks: completion.totalTasks,
-                completedTasks: completion.completedTasks,
-              });
-            } else {
-              await this.log(`🔄 태스크 진행 중: ${storyKey} (${completion.completedTasks}/${completion.totalTasks})`, {
-                totalTasks: completion.totalTasks,
-                completedTasks: completion.completedTasks,
-              });
-            }
+        if (completion) {
+          // 해당 story의 tasks 중 status가 'completed', 'reviewing', 'testing', 'developing'인 것들을 카운트
+          // developing: 개발 중, reviewing: 리뷰 중, testing: 테스트 중, completed: 완료
+          // 최종적으로 completed인 것만 완료로 간주
+          const completedCount = output.tasks.filter((t: any) => t.status === 'completed').length;
+          const inProgressCount = output.tasks.filter((t: any) => ['developing', 'reviewing', 'testing'].includes(t.status)).length;
+          completion.completedTasks = completedCount;
+
+          await this.log(`Story 태스크 완료 현황: ${storyKey}`, {
+            totalTasks: completion.totalTasks,
+            completedTasks: completedCount,
+            inProgressTasks: inProgressCount,
+          });
+
+          // 모든 태스크가 완료되었는지 확인 (최종적으로 completed 상태인 것만)
+          if (completion.completedTasks >= completion.totalTasks && completion.totalTasks > 0) {
+            completedStories.add(storyKey);
+            await this.log(`✅ Story 완료 확인: ${storyKey}`, {
+              totalTasks: completion.totalTasks,
+              completedTasks: completion.completedTasks,
+            });
           }
         }
       }
@@ -444,6 +477,7 @@ export class ScrumMasterAgent extends Agent {
 
     for (const epic of epicStoryData.epics) {
       epicOrder++;
+      storyOrder = 0; // Reset storyOrder BEFORE each Epic iteration
       const storiesInEpic = epicStoryData.stories.filter((s: any) => s.epicId === epic.id);
 
       for (const story of storiesInEpic) {
@@ -458,7 +492,6 @@ export class ScrumMasterAgent extends Agent {
       }
 
       if (currentStory) break;
-      storyOrder = 0;
     }
 
     if (!currentStory) {
@@ -481,20 +514,71 @@ export class ScrumMasterAgent extends Agent {
       story: currentStory.title,
     });
 
-    // LLM을 통한 Task 생성
-    let tasks = await this.generateTasksForStory(prd, currentEpic, currentStory, epicOrder, storyOrder);
+    // 현재 story에 대한 task list가 이미 존재하는지 확인
+    const currentStoryKey = `${epicOrder}-${storyOrder}`;
+    let tasks: Task[] = [];
+    let shouldGenerateNewTasks = true;
 
-    // Developer의 이전 실행 결과를 확인하여 Task 상태 업데이트
+    // 모든 이전 Scrum Master 실행에서 **모든 Task** 수집 (완료된 Story 포함)
+    const allTasksFromPreviousExecutions: Task[] = [];
+    for (const exec of previousExecution) {
+      if (exec.agentId === 'scrum-master' && exec.status === 'COMPLETED') {
+        const output = exec.output as any;
+        if (output && output.tasks && output.tasks.length > 0) {
+          // 모든 Task를 추가 (중복 제거)
+          for (const task of output.tasks) {
+            if (!allTasksFromPreviousExecutions.find(t => t.id === task.id)) {
+              allTasksFromPreviousExecutions.push(task);
+            }
+          }
+        }
+      }
+    }
+
+    // 현재 Story에 해당하는 Task만 필터링
+    tasks = allTasksFromPreviousExecutions.filter(t => {
+      const storyKey = `${t.epicOrder}-${t.storyOrder}`;
+      return storyKey === currentStoryKey;
+    });
+
+    // 현재 Story에 Task가 없으면 새로 생성
+    if (tasks.length === 0) {
+      await this.log(`새로운 Task List 생성: ${currentStoryKey}`);
+      tasks = await this.generateTasksForStory(prd, currentEpic, currentStory, epicOrder, storyOrder);
+
+      // 새로 생성된 Task를 allTasksFromPreviousExecutions에 추가
+      for (const task of tasks) {
+        if (!allTasksFromPreviousExecutions.find(t => t.id === task.id)) {
+          allTasksFromPreviousExecutions.push(task);
+        }
+      }
+
+      await this.log(`새로운 Task List 생성 완료: ${currentStoryKey}`, {
+        taskCount: tasks.length,
+      });
+    } else {
+      await this.log(`기존 Task List 재사용: ${currentStoryKey}`, {
+        taskCount: tasks.length,
+        completedTasks: tasks.filter((t: any) => t.status === 'completed').length,
+      });
+    }
+
+    // 중요: 이전 Story의 completed된 Task들을 포함하여 반환하기 위해
+    // 모든 Task를 모아서 반환해야 함 - 이것은 output 저장 시에 적용됨
+
+    // Developer의 이전 실행 결과를 확인하여 Task 상태 업데이트 (현재 Story의 Task만)
     const developerExecutions = previousExecution.filter(e => e.agentId === 'developer');
     if (developerExecutions.length > 0) {
       // Developer가 이미 실행한 태스크들 상태 업데이트
       for (const devExec of developerExecutions) {
         const devOutput = devExec.output as any;
         if (devOutput && devOutput.currentTask) {
+          // 모든 Task 집합에서 해당 Task 찾기 (현재 Story의 Task만)
           const taskToUpdate = tasks.find(t => t.id === devOutput.currentTask.id);
           if (taskToUpdate && devExec.status === 'COMPLETED') {
-            taskToUpdate.status = 'completed';
-            await this.log(`Task 완료 상태 업데이트: ${taskToUpdate.id}`);
+            // Developer가 완료했으면 이미 'reviewing' 상태임 (DeveloperAgent에서 설정)
+            // 여기서 상태를 변경하지 않음
+            await this.log(`Task 개발 완료 확인: ${taskToUpdate.id} (status: ${taskToUpdate.status})`);
           } else if (taskToUpdate && devExec.status === 'FAILED') {
             taskToUpdate.status = 'failed';
             await this.log(`Task 실패 상태 업데이트: ${taskToUpdate.id}`);
@@ -504,23 +588,127 @@ export class ScrumMasterAgent extends Agent {
 
       // 진행 중인 태스크 상태도 확인
       const latestDevExec = developerExecutions[0];
+
       if (latestDevExec.status === 'RUNNING' || latestDevExec.status === 'COMPLETED') {
         const devOutput = latestDevExec.output as any;
         if (devOutput && devOutput.currentTask) {
           const inProgressTask = tasks.find(t => t.id === devOutput.currentTask.id);
           if (inProgressTask && inProgressTask.status === 'pending') {
-            inProgressTask.status = latestDevExec.status === 'COMPLETED' ? 'completed' : 'in-progress';
+            inProgressTask.status = latestDevExec.status === 'COMPLETED' ? 'completed' : 'developing';
           }
         }
+      }
+    }
+
+    // 모든 태스크가 완료되었는지 확인
+    const allTasksCompleted = tasks.every(t => t.status === 'completed');
+    if (allTasksCompleted && tasks.length > 0) {
+      await this.log(`✅ 모든 Task 완료: ${currentStoryKey}`, {
+        totalTasks: tasks.length,
+        completedTasks: tasks.filter(t => t.status === 'completed').length,
+      });
+      // 현재 story를 completedStories에 추가하고 다음 story로 넘어감
+      completedStories.add(currentStoryKey);
+
+      // 다음 story 찾기
+      let nextEpic: any = null;
+      let nextStory: any = null;
+      let nextEpicOrder = 0;
+      let nextStoryOrder = 0;
+
+      // 현재 story 이후의 story 찾기
+      let foundCurrent = false;
+      for (const epic of epicStoryData.epics) {
+        nextEpicOrder++;
+        nextStoryOrder = 0; // Reset storyOrder BEFORE each Epic iteration
+        const storiesInEpic = epicStoryData.stories.filter((s: any) => s.epicId === epic.id);
+
+        for (const story of storiesInEpic) {
+          nextStoryOrder++;
+          const storyKey = `${nextEpicOrder}-${nextStoryOrder}`;
+
+          if (foundCurrent) {
+            // 다음 story를 찾음
+            nextEpic = epic;
+            nextStory = story;
+            break;
+          }
+
+          if (storyKey === currentStoryKey) {
+            foundCurrent = true;
+          }
+        }
+
+        if (nextStory) break;
+      }
+
+      // 다음 story가 있으면 그 story의 task list 생성
+      if (nextStory) {
+        await this.log('다음 Story로 이동', {
+          epic: nextEpic.title,
+          story: nextStory.title,
+        });
+
+        // 다음 story의 task list 생성
+        const nextTasks = await this.generateTasksForStory(prd, nextEpic, nextStory, nextEpicOrder, nextStoryOrder);
+
+        // 중요: 현재 Story(완료된)의 Task와 다음 Story의 Task를 모두 합쳐서 반환
+        const allTasks = [...allTasksFromPreviousExecutions, ...nextTasks];
+
+        await this.log(`모든 Task 반환 (완료된 Story + 다음 Story)`, {
+          completedStoriesCount: completedStories.size,
+          totalTasks: allTasks.length,
+          nextStoryTasks: nextTasks.length,
+        });
+
+        const nextTaskListMarkdown = this.generateTaskListMarkdown(nextEpic, nextStory, nextTasks);
+
+        return {
+          currentPhase: 'task-creation',
+          currentEpic: {
+            order: nextEpicOrder,
+            title: nextEpic.title,
+            total: epicStoryData.epics.length,
+          },
+          currentStory: {
+            epicOrder: nextEpicOrder,
+            storyOrder: nextStoryOrder,
+            title: nextStory.title,
+            totalTasks: nextTasks.length,
+          },
+          tasks: allTasks, // 모든 Task 반환 (완료된 Story 포함)
+          taskListMarkdown: nextTaskListMarkdown,
+          summary: {
+            totalTasks: allTasks.length,
+            completedTasks: allTasks.filter(t => t.status === 'completed').length,
+            failedTasks: allTasks.filter(t => t.status === 'failed').length,
+          },
+        };
+      } else {
+        // 모든 story 완료
+        await this.log('모든 Story 완료!');
+        return {
+          currentPhase: 'completed',
+          tasks: [],
+          taskListMarkdown: '# 모든 Story 완료 ✅\n\n모든 Epic과 Story가 완료되었습니다.',
+          summary: {
+            totalTasks: 0,
+            completedTasks: 0,
+            failedTasks: 0,
+          },
+        } as ScrumMasterOutput;
       }
     }
 
     // Task List Markdown 생성
     const taskListMarkdown = this.generateTaskListMarkdown(currentEpic, currentStory, tasks);
 
-    // Summary 계산 (실제 Task 상태 기반)
-    const completedCount = tasks.filter(t => t.status === 'completed').length;
-    const failedCount = tasks.filter(t => t.status === 'failed').length;
+    // Summary 계산 (모든 Task 기반)
+    const allTasksSummary = {
+      totalTasks: allTasksFromPreviousExecutions.length,
+      completedTasks: allTasksFromPreviousExecutions.filter(t => t.status === 'completed').length,
+      failedTasks: allTasksFromPreviousExecutions.filter(t => t.status === 'failed').length,
+    };
 
     const output: ScrumMasterOutput = {
       currentPhase: 'task-creation',
@@ -535,19 +723,15 @@ export class ScrumMasterAgent extends Agent {
         title: currentStory.title,
         totalTasks: tasks.length,
       },
-      tasks,
+      tasks: allTasksFromPreviousExecutions, // 모든 Task 반환 (완료된 Story 포함)
       taskListMarkdown,
-      summary: {
-        totalTasks: tasks.length,
-        completedTasks: completedCount,
-        failedTasks: failedCount,
-      },
+      summary: allTasksSummary,
     };
 
     await this.log('Task List 생성 완료', {
-      taskCount: tasks.length,
-      completedCount,
-      failedCount,
+      currentStoryTasks: tasks.length,
+      allTasks: allTasksFromPreviousExecutions.length,
+      ...allTasksSummary,
     });
 
     return output;
@@ -561,39 +745,92 @@ export class ScrumMasterAgent extends Agent {
     storyOrder: number
   ): Promise<Task[]> {
     const prompt = this.buildTaskGenerationPrompt(prd, epic, story);
+    const maxRetries = 3;
+    let lastError: any = null;
 
-    try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 8192,
-        temperature: 0.3,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.log(`Anthropic API 호출 (시도 ${attempt}/${maxRetries})`, {
+          epic: epic.title,
+          story: story.title,
+        });
 
-      const text = response.content[0].type === 'text' ? response.content[0].text : '';
-      const taskList = this.parseTaskListResponse(text);
+        const response = await this.anthropic.messages.create({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 8192,
+          temperature: 0.3,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        });
 
-      return taskList.map((taskData: any, index: number) => ({
-        id: `task-${epicOrder}-${storyOrder}-${index + 1}`,
-        title: taskData.title,
-        description: taskData.description,
-        status: 'pending' as const,
-        assignedTo: 'developer' as const,
-        priority: taskData.priority || 'medium',
-        storyId: story.id,
-        epicOrder,
-        storyOrder,
-        taskOrder: index + 1,
-      }));
-    } catch (error: any) {
-      await this.logError(error);
-      throw new Error(`Task 생성 실패: ${error.message}`);
+        const text = response.content[0].type === 'text' ? response.content[0].text : '';
+        const taskList = this.parseTaskListResponse(text);
+
+        await this.log(`Task 생성 성공 (시도 ${attempt}/${maxRetries})`, {
+          taskCount: taskList.length,
+        });
+
+        return taskList.map((taskData: any, index: number) => ({
+          id: `task-${epicOrder}-${storyOrder}-${index + 1}`,
+          title: taskData.title,
+          description: taskData.description,
+          status: 'pending' as const,
+          assignedTo: 'developer' as const,
+          priority: taskData.priority || 'medium',
+          storyId: story.id,
+          epicOrder,
+          storyOrder,
+          taskOrder: index + 1,
+        }));
+      } catch (error: any) {
+        lastError = error;
+
+        // 재시도 가능한 에러인지 확인 (5xx 에러 또는 네트워크 에러)
+        const isRetryable =
+          (error.status !== undefined && error.status >= 500) ||
+          error.type === 'error' ||
+          error.message?.includes('ECONNRESET') ||
+          error.message?.includes('ETIMEDOUT') ||
+          error.message?.includes('ENOTFOUND');
+
+        await this.logError(error, `시도 ${attempt}/${maxRetries} 실패`);
+
+        // 마지막 시도이거나 재시도 불가능한 에러면 즉시 실패
+        if (attempt === maxRetries || !isRetryable) {
+          const errorDetails = {
+            message: error.message,
+            status: error.status,
+            type: error.type,
+            attempts: attempt,
+            isRetryable,
+          };
+          await this.logError(
+            new Error(
+              `Task 생성 실패: ${JSON.stringify(errorDetails)}`
+            )
+          );
+          throw new Error(
+            `Task 생성 실패 (${attempt}/${maxRetries} 시도): ${error.message} (Status: ${error.status || 'N/A'}, Type: ${error.type || 'unknown'})`
+          );
+        }
+
+        // Exponential backoff: 1초, 2초, 4초
+        const backoffDelay = Math.pow(2, attempt - 1) * 1000;
+        await this.log(
+          `${backoffDelay / 1000}초 후 재시도... (이유: ${error.message})`
+        );
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      }
     }
+
+    // 여기까지 오면 모든 재시도가 실패한 것
+    throw new Error(
+      `Task 생성 실패: ${maxRetries}회 시도 후에도 성공하지 못함. 마지막 에러: ${lastError?.message}`
+    );
   }
 
   private buildTaskGenerationPrompt(prd: any, epic: any, story: any): string {
@@ -950,23 +1187,11 @@ JSON 배열로 출력하세요:
     return await this.generateTaskList(epicStoryData, await this.getSelectedPRD(input.projectId), input);
   }
 
-  private async saveToDatabase(projectId: string, output: ScrumMasterOutput): Promise<void> {
+  private async saveToDatabase(executionId: string, output: ScrumMasterOutput): Promise<void> {
     try {
-      const execution = await prisma.agentExecution.findFirst({
-        where: { projectId, agentId: 'scrum-master' },
-        orderBy: { startedAt: 'desc' },
-      });
-
-      if (!execution) {
-        throw new Error('Scrum Master execution not found');
-      }
-
-      await prisma.agentExecution.update({
-        where: { id: execution.id },
-        data: {
-          output: output as any,
-        },
-      });
+      // Orchestrator가 이미 execution을 업데이트하므로, 여기서는 아무것도 하지 않음
+      // 과거: projectId로 execution을 찾아서 업데이트했지만, 이는 다른 실행을 덮어쓰는 문제가 있었음
+      await this.log('saveToDatabase: Orchestrator가 업데이트를 담당하므로 건너뜀', { executionId });
     } catch (error: any) {
       await this.logError(error);
       throw new Error(`DB 저장 실패: ${error.message}`);

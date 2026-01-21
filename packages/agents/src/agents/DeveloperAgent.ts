@@ -36,19 +36,21 @@ interface DeveloperOutput {
     description: string;
   };
   completedTasks: string[];
+  codeSpecifications: Array<{
+    filePath: string;
+    fileType: 'component' | 'page' | 'api' | 'util' | 'other' | 'prisma';
+    description: string;
+    requirements: string[];
+  }>;
   generatedFiles: {
     path: string;
     content: string;
-    type: 'component' | 'page' | 'api' | 'util' | 'other';
-  }[];
-  changes: {
-    file: string;
-    diff: string;
-  }[];
+    type: 'component' | 'page' | 'api' | 'util' | 'other' | 'prisma';
+  }[]; // FileGeneratorAgent에서 채워짐
   summary: {
     totalTasksCompleted: number;
-    filesCreated: number;
-    filesModified: number;
+    specsGenerated: number;
+    filesCreated: number; // FileGeneratorAgent에서 채워짐
   };
 }
 
@@ -121,12 +123,12 @@ export class DeveloperAgent extends Agent {
         output: {
           currentPhase: 'completed',
           completedTasks: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
+          codeSpecifications: [],
           generatedFiles: [],
-          changes: [],
           summary: {
             totalTasksCompleted: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').length,
+            specsGenerated: 0,
             filesCreated: 0,
-            filesModified: 0,
           },
         } as DeveloperOutput,
       };
@@ -136,6 +138,9 @@ export class DeveloperAgent extends Agent {
       taskId: pendingTask.id,
       title: pendingTask.title,
     });
+
+    // Task 상태를 developing으로 변경
+    await this.updateTaskStatus(input.projectId, pendingTask.id, 'developing');
 
     // 3. PRD와 Story 정보 로드
     const prd = await this.getPRD(input.projectId);
@@ -151,12 +156,12 @@ export class DeveloperAgent extends Agent {
 
       await this.log('Task 개발 완료', {
         taskId: pendingTask.id,
+        specsGenerated: result.summary.specsGenerated,
         filesCreated: result.summary.filesCreated,
-        filesModified: result.summary.filesModified,
       });
 
-      // 5. Scrum Master의 Task 상태 업데이트 (성공)
-      await this.updateTaskStatus(input.projectId, pendingTask.id, 'completed');
+      // 5. Scrum Master의 Task 상태 업데이트 (성공 - reviewing 단계로 이동)
+      await this.updateTaskStatus(input.projectId, pendingTask.id, 'reviewing');
 
       return {
         status: AgentStatus.COMPLETED,
@@ -179,12 +184,12 @@ export class DeveloperAgent extends Agent {
         output: {
           currentPhase: 'development',
           completedTasks: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
+          codeSpecifications: [],
           generatedFiles: [],
-          changes: [],
           summary: {
             totalTasksCompleted: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').length,
+            specsGenerated: 0,
             filesCreated: 0,
-            filesModified: 0,
           },
           error: {
             taskId: pendingTask.id,
@@ -261,92 +266,20 @@ export class DeveloperAgent extends Agent {
       completedTasks: scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
     });
 
-    // 프롬프트 빌드
-    const prompt = this.buildDevelopmentPrompt(task, prd, story, scrumMasterOutput, input.failureContext);
+    await this.log('코드 사양 작성 시작', {
+      taskId: task.id,
+      title: task.title,
+    });
 
-    // LLM 응답 재시도 로직 (지수 백오프 적용)
-    let generatedFiles: any[] = [];
-    let changes: any[] = [];
+    // 1단계: 코드 사양 작성 (LLM 호출)
+    const codeSpecifications = await this.generateCodeSpecifications(task, prd, story, input);
 
-    const response = await this.retryWithBackoff(
-      async () => {
-        await this.log('LLM 코드 생성 시도', {
-          taskId: task.id,
-        });
+    await this.log('코드 사양 작성 완료', {
+      specsCount: codeSpecifications.length,
+      specs: codeSpecifications.map(s => s.filePath),
+    });
 
-        const llmResponse = await this.anthropic.messages.create({
-          model: 'claude-sonnet-4-5-20250929',
-          max_tokens: 16384,
-          temperature: 0.3,
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-        });
-
-        const text = llmResponse.content[0].type === 'text' ? llmResponse.content[0].text : '';
-
-        // 🐛 DEBUG: LLM 응답 전체를 파일로 저장하여 분석
-        const debugDir = join(this.magicWandRoot, 'debug-llm-responses');
-        await fs.ensureDir(debugDir);
-        const debugFile = join(debugDir, `task-${task.id}-${Date.now()}.md`);
-        writeFileSync(debugFile, text, 'utf-8');
-        await this.log('🐛 LLM 응답 전체를 디버그 파일에 저장', {
-          taskId: task.id,
-          debugFile,
-          responseLength: text.length,
-        });
-
-        // 생성된 코드 파싱 및 파일 작성
-        const result = await this.parseAndWriteCode(text, task, input);
-        generatedFiles = result.generatedFiles;
-        changes = result.changes;
-
-        // 파일이 하나라도 생성되었는지 확인
-        if (generatedFiles.length === 0 && changes.length === 0) {
-          // 응답 분석으로 상세 에러 제공
-          const analysis = this.analyzeLLMResponse(text);
-
-          // 🐛 DEBUG: 실패 시 응답을 별도 파일로 저장
-          const failureDebugFile = join(debugDir, `task-${task.id}-failure-${Date.now()}.md`);
-          writeFileSync(failureDebugFile, text, 'utf-8');
-
-          await this.log('❌ LLM 파일 생성 실패 - 상세 분석', {
-            taskId: task.id,
-            responseLength: text.length,
-            responseType: analysis.type,
-            elements: analysis.elements,
-            failureDebugFile,
-          });
-
-          throw new Error(
-            `LLM이 파일을 생성하지 않았습니다.\n` +
-            `- 응답 길이: ${text.length} 바이트\n` +
-            `- 응답 유형: ${analysis.type}\n` +
-            `- 발견된 요소: ${analysis.elements.join(', ') || '없음'}\n` +
-            `- 응답 미리보기 (앞 500자): ${text.substring(0, 500)}...\n` +
-            `- 응답 미리보기 (뒤 500자): ...${text.substring(Math.max(0, text.length - 500))}\n` +
-            `- 🐛 전체 응답은 파일 확인: ${failureDebugFile}`
-          );
-        }
-
-        await this.log('LLM 코드 생성 성공', {
-          taskId: task.id,
-          filesCreated: generatedFiles.length,
-          filesModified: changes.length,
-        });
-
-        return llmResponse;
-      },
-      `Task "${task.title}" LLM code generation`,
-      3, // maxRetries
-      5000, // initialDelay = 5 seconds (Ralphy uses 5s)
-      2 // backoffMultiplier = 2 (exponential: 5s, 10s, 20s)
-    );
-
-    // Task 상태 업데이트
+    // 2단계: 사양을 output에 담아 반환 (실제 코드 생성은 FileGeneratorAgent가 담당)
     const completedTasks = [
       ...scrumMasterOutput.tasks.filter((t: any) => t.status === 'completed').map((t: any) => t.id),
       task.id,
@@ -356,16 +289,244 @@ export class DeveloperAgent extends Agent {
       currentPhase: 'development',
       currentTask: task,
       completedTasks,
-      generatedFiles,
-      changes,
+      codeSpecifications,
+      generatedFiles: [], // FileGeneratorAgent에서 채워짐
       summary: {
         totalTasksCompleted: completedTasks.length,
-        filesCreated: generatedFiles.length,
-        filesModified: changes.length,
+        specsGenerated: codeSpecifications.length,
+        filesCreated: 0, // FileGeneratorAgent에서 채워짐
       },
     };
 
     return output;
+  }
+
+  private async generateCodeSpecifications(
+    task: any,
+    prd: any,
+    story: any,
+    input: DeveloperInput
+  ): Promise<Array<{
+    filePath: string;
+    fileType: 'component' | 'page' | 'api' | 'util' | 'other' | 'prisma';
+    description: string;
+    requirements: string[];
+  }>> {
+    const prompt = this.buildSpecificationPrompt(task, prd, story, input.failureContext);
+
+    await this.log('LLM 사양 작성 시도', {
+      taskId: task.id,
+    });
+
+    const llmResponse = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-5-20250929',
+      max_tokens: 4096,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+    });
+
+    const text = llmResponse.content[0].type === 'text' ? llmResponse.content[0].text : '';
+
+    // 🐛 DEBUG: 사양 응답 저장
+    const debugDir = join(this.magicWandRoot, 'debug-llm-responses');
+    await fs.ensureDir(debugDir);
+    const debugFile = join(debugDir, `specs-${task.id}-${Date.now()}.md`);
+    writeFileSync(debugFile, text, 'utf-8');
+
+    // 사양 파싱
+    const specs = this.parseSpecifications(text);
+
+    if (specs.length === 0) {
+      throw new Error(
+        `코드 사양 작성 실패: LLM이 사양을 생성하지 않았습니다.\n` +
+        `응답 길이: ${text.length} 바이트\n` +
+        `응답 미리보기:\n${text.substring(0, 500)}...\n` +
+        `🐛 전체 응답: ${debugFile}`
+      );
+    }
+
+    return specs;
+  }
+
+  private parseSpecifications(text: string): Array<{
+    filePath: string;
+    fileType: 'component' | 'page' | 'api' | 'util' | 'other' | 'prisma';
+    description: string;
+    requirements: string[];
+  }> {
+    const specs: Array<{
+      filePath: string;
+      fileType: 'component' | 'page' | 'api' | 'util' | 'other' | 'prisma';
+      description: string;
+      requirements: string[];
+    }> = [];
+
+    // 정규식으로 각 파일 사양 추출
+    const specPattern = /###\s*파일:\s*(.+?)\n(?:-+\n)?([\s\S]*?)(?=###\s*파일:|$)/g;
+    let match;
+
+    while ((match = specPattern.exec(text)) !== null) {
+      const [, filePath, content] = match;
+
+      // 파일 타입 결정
+      let fileType: 'component' | 'page' | 'api' | 'util' | 'other' | 'prisma' = 'other';
+      if (filePath.includes('prisma/schema.prisma')) fileType = 'prisma';
+      else if (filePath.includes('/components/')) fileType = 'component';
+      else if (filePath.includes('/app/') && filePath.endsWith('page.tsx')) fileType = 'page';
+      else if (filePath.includes('/routes/')) fileType = 'api';
+      else if (filePath.includes('/lib/')) fileType = 'util';
+
+      // 설명 추출
+      const descriptionMatch = content.match(/설명:\s*(.+?)(?=\n|$)/);
+      const description = descriptionMatch ? descriptionMatch[1].trim() : '';
+
+      // 요구사항 추출
+      const requirements: string[] = [];
+      const reqPattern = /-\s*(.+?)(?=\n|$)/g;
+      let reqMatch;
+      while ((reqMatch = reqPattern.exec(content)) !== null) {
+        requirements.push(reqMatch[1].trim());
+      }
+
+      specs.push({
+        filePath: filePath.trim(),
+        fileType,
+        description,
+        requirements: requirements.length > 0 ? requirements : ['기본 기능 구현'],
+      });
+    }
+
+    return specs;
+  }
+
+  private buildSpecificationPrompt(task: any, prd: any, story: any, failureContext?: any): string {
+    const prdContent = prd?.analysisMarkdown || '';
+
+    // 실패 컨텍스트가 있는 경우
+    let failureContextSection = '';
+    if (failureContext && failureContext.errors && failureContext.errors.length > 0) {
+      failureContextSection = `
+## ⚠️ 이전 실패 정보
+
+이 Task는 이전에 실패한 기록이 있습니다. **반드시 아래 실패 원인을 분석하고 사양을 수정하세요**.
+
+### 이전 실패 원인
+${failureContext.errors.map((errorInfo: any, idx: number) => `
+#### ${idx + 1}. ${errorInfo.agentName}
+\`\`\`
+${errorInfo.error.message || '알 수 없는 오류'}
+\`\`\`
+`).join('')}
+
+---
+`;
+    }
+
+    return `# 코드 사양 작성 요청
+
+당신은 Next.js 14+ Full-Stack 아키텍트입니다.
+할당된 Task를 분석하고 **코드 사양(specification)**을 작성하세요.
+
+**중요: 코드를 직접 작성하지 말고, "어떤 파일을 만들지, 각 파일이 무엇을 해야 할지"만 명시하세요.**
+
+${failureContextSection}
+
+## Task 정보
+
+**Task ID**: ${task.id}
+**제목**: ${task.title}
+**설명**: ${task.description}
+
+## Story 컨텍스트
+
+\`\`\`markdown
+${story?.markdown || 'N/A'}
+\`\`\`
+
+## PRD 컨텍스트
+
+\`\`\`
+${prdContent.substring(0, 5000)}
+\`\`\`
+
+## 기술 스택
+
+- **Frontend**: Next.js 14+ (App Router)
+- **UI Library**: shadcn/ui (Radix UI + Tailwind CSS)
+- **Backend**: Next.js API Routes
+- **Database**: Prisma ORM + PostgreSQL
+- **Styling**: Tailwind CSS
+
+## 프로젝트 구조
+
+\`\`\`
+src/
+  app/          # App Router pages
+  components/   # React components
+  lib/          # Utilities
+\`\`\`
+
+## 출력 형식
+
+각 파일을 다음 형식으로 사양화하세요:
+
+\`\`\`markdown
+### 파일: [파일 경로]
+---
+설명: [이 파일의 역할과 목적]
+- [요구사항 1]
+- [요구사항 2]
+- [요구사항 3]
+
+### 파일: [파일 경로]
+---
+설명: [이 파일의 역할과 목적]
+- [요구사항 1]
+- [요구사항 2]
+\`\`\`
+
+## 예시
+
+\`\`\`markdown
+### 파일: src/lib/api/pokemon.ts
+---
+설명: PokeAPI 호출 및 DB 캐싱 로직을 담당하는 유틸리티 모듈
+- Prisma Client를 사용하여 DB 캐시 조회
+- Cache-Aside Pattern 구현
+- getPokemonList 함수 export
+- 캐시 TTL: 1시간
+
+### 파일: src/app/page.tsx
+---
+설명: 포켓몬 목록을 표시하는 메인 페이지
+- Server Component로 구현
+- getPokemonList 호출하여 데이터 가져오기
+- Grid 레이아웃으로 포켓몬 카드 표시
+- 각 카드: 이름, ID, 링크
+
+### 파일: prisma/schema.prisma
+---
+설명: Prisma 스키마 정의
+- PokemonCache 모델 정의
+- id (String, @id)
+- data (Json)
+- updatedAt (DateTime, @updatedAt)
+\`\`\`
+
+## ⚠️ 필수 준수 사항
+
+1. **파일 경로**: 반드시 \`src/\`로 시작 (예: \`src/app/page.tsx\`)
+2. **구체적 요구사항**: 각 파일이 해야 할 일을 명확히 명시
+3. **완전성**: 필요한 모든 파일을 사양화
+4. **실현 가능성**: 기술 스택에 맞는 사양 작성
+
+이제 위 형식을 따라서 코드 사양을 작성하세요.
+`;
   }
 
   private buildDevelopmentPrompt(task: any, prd: any, story: any, scrumMasterOutput: any, failureContext?: any): string {
@@ -926,7 +1087,7 @@ export default function Home() {
     }
   }
 
-  private async updateTaskStatus(projectId: string, taskId: string, status: 'pending' | 'in-progress' | 'completed' | 'failed'): Promise<void> {
+  private async updateTaskStatus(projectId: string, taskId: string, status: 'pending' | 'developing' | 'reviewing' | 'testing' | 'completed' | 'failed'): Promise<void> {
     try {
       // Scrum Master 실행 기록 찾기
       const scrumMasterExec = await prisma.agentExecution.findFirst({

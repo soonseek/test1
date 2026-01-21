@@ -4,6 +4,7 @@ import { RequirementAnalyzerAgent } from '@magic-wand/agents';
 import { EpicStoryAgent } from '@magic-wand/agents';
 import { ScrumMasterAgent } from '@magic-wand/agents';
 import { DeveloperAgent } from '@magic-wand/agents';
+import { FileGeneratorAgent } from '@magic-wand/agents';
 import { CodeReviewerAgent } from '@magic-wand/agents';
 import { TesterAgent } from '@magic-wand/agents';
 import { PromptBuilderAgent } from '@magic-wand/agents';
@@ -40,6 +41,7 @@ export class MagicOrchestrator {
     this.agents.set('epic-story', new EpicStoryAgent());
     this.agents.set('scrum-master', new ScrumMasterAgent());
     this.agents.set('developer', new DeveloperAgent());
+    this.agents.set('file-generator', new FileGeneratorAgent());
     this.agents.set('code-reviewer', new CodeReviewerAgent());
     this.agents.set('tester', new TesterAgent());
     this.agents.set('prompt-builder', new PromptBuilderAgent());
@@ -105,6 +107,38 @@ export class MagicOrchestrator {
   public resumeDevelopment(projectId: string): void {
     console.log(`[Orchestrator] ▶️ Development resumed for project ${projectId}`);
     this.paused.set(projectId, false);
+  }
+
+  /**
+   * 개발 초기화 (처음부터 다시)
+   * 요구사항 분석, Epic & Story는 유지하고 개발 관련 에이전트만 삭제
+   */
+  public async resetDevelopment(projectId: string): Promise<void> {
+    console.log(`[Orchestrator] 🔄 Resetting development for project ${projectId}`);
+
+    try {
+      // 활성 개발 루프에서 제거
+      this.activeDevelopmentLoops.delete(projectId);
+      this.paused.delete(projectId);
+
+      // 개발 관련 AgentExecution 삭제 (요구사항 분석, Epic & Story 제외)
+      const deletedExecutions = await prisma.agentExecution.deleteMany({
+        where: {
+          projectId,
+          agentId: {
+            in: ['scrum-master', 'developer', 'file-generator', 'code-reviewer', 'tester'],
+          },
+        },
+      });
+
+      console.log(`[Orchestrator] ✅ Deleted ${deletedExecutions.count} development-related executions`);
+
+      console.log(`[Orchestrator] ✅ Development reset completed for ${projectId}`);
+      console.log(`[Orchestrator] 📋 Preserved: requirement-analyzer, epic-story executions`);
+    } catch (error) {
+      console.error(`[Orchestrator] ❌ Error resetting development:`, error);
+      throw error;
+    }
   }
 
   /**
@@ -449,13 +483,19 @@ export class MagicOrchestrator {
 
     console.log(`[Orchestrator] Agent execution record created: ${execution.id}`);
 
+    // executionId를 input에 추가 (Agent가 자신의 execution ID를 알 수 있도록)
+    const inputWithExecutionId = {
+      ...input,
+      executionId: execution.id,
+    };
+
     try {
       // Agent 실행
       console.log(`[Orchestrator] About to execute agent ${agentId}...`);
       console.log(`[Orchestrator] Agent input type:`, typeof input);
       console.log(`[Orchestrator] Agent has execute method:`, typeof agent.execute);
 
-      const result = await agent.execute(input);
+      const result = await agent.execute(inputWithExecutionId);
 
       console.log(`[Orchestrator] Agent ${agentId} execution completed`);
       console.log(`[Orchestrator] Agent result status:`, result.status);
@@ -939,6 +979,50 @@ export class MagicOrchestrator {
 
       // Developer 성공 시 재시도 횟수 초기화
       taskRetryCount.delete(task.id);
+
+      const developerOutput = developerResult.output as any;
+
+      // 2단계: FileGeneratorAgent로 실제 코드 생성
+      console.log(`[Orchestrator] 📝 File Generator: Task ${task.id}, specs: ${developerOutput.codeSpecifications?.length || 0}`);
+
+      let fileGeneratorResult;
+      try {
+        fileGeneratorResult = await this.runAgent('file-generator', projectId, {
+          projectId,
+          project: {
+            name: project.name,
+            description: project.description,
+          },
+          task: {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+          },
+          codeSpecifications: developerOutput.codeSpecifications || [],
+          prd: selectedPRD,
+          story: epicStoryOutput,
+        });
+      } catch (error: any) {
+        console.log(`[Orchestrator] ⚠️ File Generator 실패: ${error.message}`);
+        console.log('[Orchestrator] 🔄 Task를 다시 시도를 위해 pending 상태로 유지');
+        taskRetryCount.set(task.id, retryCount + 1);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      if (fileGeneratorResult.status !== 'COMPLETED') {
+        console.log('[Orchestrator] ⚠️ File Generator 상태가 COMPLETED가 아님, 다음 Task로 이동');
+        taskRetryCount.set(task.id, retryCount + 1);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      // FileGenerator의 결과를 developerOutput에 병합
+      const fileGenOutput = fileGeneratorResult.output as any;
+      developerOutput.generatedFiles = fileGenOutput.generatedFiles || [];
+      developerOutput.summary.filesCreated = fileGenOutput.summary?.totalFiles || 0;
+
+      console.log(`[Orchestrator] ✅ File Generator 완료: ${developerOutput.summary.filesCreated}개 파일 생성`);
 
       // Code Reviewer 실행
       console.log(`[Orchestrator] 🔍 Code Reviewer: Task ${task.id}`);

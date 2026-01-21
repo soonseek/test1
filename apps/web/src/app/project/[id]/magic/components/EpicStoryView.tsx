@@ -59,20 +59,24 @@ export default function EpicStoryView({
   const output = lastExecution.output || {};
   const { epics = [], stories = [], summary } = output;
 
-  // Epic별 Story 그룹화
-  const getStoriesForEpic = (epicIndex: number) => {
-    const epic = epics[epicIndex];
-    if (!epic) return [];
-    return stories.filter((s: any) => s.epicId === epic.id);
+  // Scrum Master 실행에서 Task 데이터 추출
+  const scrumMasterExec = executions.find((e: any) => e.agentId === 'scrum-master');
+  const allTasks = scrumMasterExec?.output?.tasks || [];
+
+  // Story별 Task 완료 현황 계산 함수
+  const getStoryTaskCompletion = (story: any) => {
+    const storyTasks = allTasks.filter((t: any) => t.storyId === story.id);
+    const totalTasks = storyTasks.length;
+    const completedTasks = storyTasks.filter((t: any) => t.status === 'completed').length;
+    return { totalTasks, completedTasks };
   };
 
-  const selectedEpicStories = selectedEpicIndex !== null ? getStoriesForEpic(selectedEpicIndex) : [];
-  const selectedStory = selectedStoryIndex !== null && selectedEpicStories[selectedStoryIndex]
-    ? selectedEpicStories[selectedStoryIndex]
-    : null;
+  // Epic & Story 생성 중일 때만 spinner 표시
+  // Scrum Master가 실행되었다면 Epic & Story는 이미 완료된 것으로 간주
+  const isEpicStoryRunning = lastExecution.agentId === 'epic-story' && lastExecution.status === 'RUNNING';
+  const hasScrumMaster = executions.some((e: any) => e.agentId === 'scrum-master' && e.status === 'COMPLETED');
 
-  // 진행 상황 표시 (RUNNING일 때)
-  if (lastExecution.status === 'RUNNING') {
+  if (isEpicStoryRunning && !hasScrumMaster) {
     return (
       <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
         <div className="text-center py-12">
@@ -116,67 +120,20 @@ export default function EpicStoryView({
               </div>
             </div>
           )}
-
-          {/* 진행 상황 실시간 미리보기 (생성된 것부터 표시) */}
-          {(epics.length > 0 || stories.length > 0) && (
-            <div className="mt-8 text-left">
-              <div className="text-white/60 text-sm mb-3">진행 상황 미리보기:</div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                {/* Epic 목록 */}
-                <div className="space-y-2">
-                  <h4 className="text-white font-medium text-sm mb-2">Epic ({epics.length})</h4>
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {epics.map((epic: any, i: number) => (
-                      <div
-                        key={i}
-                        className={`p-2 rounded text-xs ${
-                          i === selectedEpicIndex ? 'bg-purple-500/20 border border-purple-500' : 'bg-white/5'
-                        }`}
-                      >
-                        <div className="text-white font-medium truncate">{epic.title}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Story 목록 */}
-                <div className="space-y-2">
-                  <h4 className="text-white font-medium text-sm mb-2">Story ({stories.length})</h4>
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
-                    {stories.slice(0, 10).map((story: any, i: number) => (
-                      <div
-                        key={i}
-                        className="p-2 rounded text-xs bg-white/5"
-                      >
-                        <div className="text-white/80 truncate text-xs">{story.title}</div>
-                      </div>
-                    ))}
-                    {stories.length > 10 && (
-                      <div className="text-white/50 text-xs p-2 text-center">
-                        +{stories.length - 10} more
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 최근 생성된 Story 상세 */}
-                {stories.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="text-white font-medium text-sm mb-2">최근 Story</h4>
-                    <div className="bg-white/5 rounded p-2 max-h-40 overflow-y-auto">
-                      <div className="text-white/80 text-xs whitespace-pre-wrap line-clamp-6">
-                        {stories[stories.length - 1].markdown}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     );
   }
+
+  // Epic별 Story 그룹화
+  const getStoriesForEpic = (epicIndex: number) => {
+    const epic = epics[epicIndex];
+    if (!epic) return [];
+    return stories.filter((s: any) => s.epicId === epic.id);
+  };
+
+  const selectedEpicStories = getStoriesForEpic(selectedEpicIndex);
+  const selectedStory = selectedStoryIndex !== null ? selectedEpicStories[selectedStoryIndex] : null;
 
   if (lastExecution.status === 'FAILED') {
     return (
@@ -321,7 +278,29 @@ export default function EpicStoryView({
                       {story.storyPoints}pt
                     </span>
                   </div>
-                  <p className="text-white/60 text-xs line-clamp-2">{story.description}</p>
+                  <p className="text-white/60 text-xs line-clamp-2 mb-2">{story.description}</p>
+                  <div className="flex items-center gap-2 text-xs">
+                    {(() => {
+                      const { totalTasks, completedTasks } = getStoryTaskCompletion(story);
+                      if (totalTasks > 0) {
+                        const percentage = Math.round((completedTasks / totalTasks) * 100);
+                        return (
+                          <>
+                            <div className="flex-1 bg-white/10 rounded-full h-2 overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-purple-500 to-amber-500 transition-all duration-300"
+                                style={{ width: `${percentage}%` }}
+                              />
+                            </div>
+                            <span className="text-white/70 whitespace-nowrap">
+                              {completedTasks}/{totalTasks}
+                            </span>
+                          </>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
                 </div>
               ))
             ) : (

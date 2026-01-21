@@ -316,10 +316,10 @@ export default function SurveyPage() {
                   {collected.colorTheme && <div className="flex items-center gap-2"><span className="text-vivid-purple">•</span> 색상: {collected.colorTheme}</div>}
                   {collected.authType && <div className="flex items-center gap-2"><span className="text-vivid-purple">•</span> 인증: {collected.authType}</div>}
                   {collected.requiredPages && (
-                    <div className="flex items-center gap-2"><span className="text-vivid-purple">•</span> 페이지: {collected.requiredPages.join(', ')}</div>
+                    <div className="flex items-center gap-2"><span className="text-vivid-purple">•</span> 페이지: {Array.isArray(collected.requiredPages) ? collected.requiredPages.join(', ') : collected.requiredPages}</div>
                   )}
                   {collected.databaseTables && (
-                    <div className="flex items-center gap-2"><span className="text-vivid-purple">•</span> 데이터: {collected.databaseTables.join(', ')}</div>
+                    <div className="flex items-center gap-2"><span className="text-vivid-purple">•</span> 데이터: {Array.isArray(collected.databaseTables) ? collected.databaseTables.join(', ') : collected.databaseTables}</div>
                   )}
                 </div>
               </div>

@@ -628,32 +628,59 @@ router.post('/deploy/:projectId', async (req, res) => {
 // GET /api/magic/logs - 서버 로그 실시간 조회
 router.get('/logs', async (req, res) => {
   try {
-    const { lines = 100 } = req.query;
+    const { lines = 100, projectId } = req.query;
 
     // Claude Code가 작성한 백그라운드 태스크 출력 파일 경로
     const fs = require('fs');
     const path = require('path');
 
-    // 백그라운드 태스크 출력 파일이 있는 디렉토리 (고정 경로 사용)
-    const tasksDir = 'C:\\tmp\\claude\\tasks';
+    // 백그라운드 태스크 출력 파일이 있는 디렉토리 (여러 경로 시도)
+    const os = require('os');
+    const possibleDirs = [
+      'C:\\tmp\\claude\\tasks',           // Windows 경로
+      '/c/tmp/claude/tasks',              // Git Bash 경로
+      '/tmp/claude/tasks',                // Unix/Linux 경로
+      path.join(os.tmpdir(), 'claude', 'tasks'), // OS 기본 tempdir
+    ];
 
     // 가장 최근의 출력 파일 찾기
     let latestLogFile: string | null = null;
     let latestTime = 0;
 
     try {
-      if (fs.existsSync(tasksDir)) {
-        const files = fs.readdirSync(tasksDir);
-        files.forEach(file => {
-          if (file.endsWith('.output')) {
-            const filePath = path.join(tasksDir, file);
-            const stats = fs.statSync(filePath);
-            if (stats.mtimeMs > latestTime) {
-              latestTime = stats.mtimeMs;
-              latestLogFile = filePath;
+      // 가능한 모든 경로를 시도
+      for (const tasksDir of possibleDirs) {
+        if (fs.existsSync(tasksDir)) {
+          const files = fs.readdirSync(tasksDir);
+          files.forEach((file: string) => {
+            if (file.endsWith('.output')) {
+              const filePath = path.join(tasksDir, file);
+              const stats = fs.statSync(filePath);
+
+              // projectId가 있으면 해당 프로젝트와 관련된 로그만 찾기
+              if (projectId) {
+                // 로그 파일 내용에 projectId가 포함되어 있는지 확인
+                try {
+                  const content = fs.readFileSync(filePath, 'utf-8');
+                  if (content.includes(projectId as string)) {
+                    if (stats.mtimeMs > latestTime) {
+                      latestTime = stats.mtimeMs;
+                      latestLogFile = filePath;
+                    }
+                  }
+                } catch (readError) {
+                  // 파일 읽기 실패 시 무시
+                }
+              } else {
+                // projectId가 없으면 가장 최근 파일
+                if (stats.mtimeMs > latestTime) {
+                  latestTime = stats.mtimeMs;
+                  latestLogFile = filePath;
+                }
+              }
             }
-          }
-        });
+          });
+        }
       }
     } catch (error) {
       console.error('[Magic API] Error reading tasks directory:', error);
@@ -661,7 +688,7 @@ router.get('/logs', async (req, res) => {
 
     if (!latestLogFile || !fs.existsSync(latestLogFile)) {
       return res.json({
-        logs: ['서버 로그 파일을 찾을 수 없습니다. API 서버가 실행 중인지 확인해주세요.'],
+        logs: [`서버 로그 파일을 찾을 수 없습니다${projectId ? ` (프로젝트: ${projectId})` : ''}. API 서버가 실행 중인지 확인해주세요.`],
         lastModified: null,
       });
     }
@@ -675,7 +702,7 @@ router.get('/logs', async (req, res) => {
     const requestedLines = logLines.slice(-lineCount);
 
     res.json({
-      logs: requestedLines.filter(line => line.trim()),
+      logs: requestedLines.filter((line: string) => line.trim()),
       lastModified: latestTime,
       totalLines: logLines.length,
     });
@@ -716,6 +743,38 @@ router.post('/pause', async (req, res) => {
     res.status(500).json({
       error: {
         message: 'Failed to pause development',
+        ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
+      },
+    });
+  }
+});
+
+// POST /api/magic/reset-development - 개발 초기화 (처음부터 다시)
+router.post('/reset-development', async (req, res) => {
+  try {
+    const { projectId } = req.body;
+
+    if (!projectId) {
+      return res.status(400).json({
+        error: { message: 'projectId is required' },
+      });
+    }
+
+    console.log('[Magic API] Resetting development for projectId:', projectId);
+
+    const orchestrator = getOrchestrator();
+    await orchestrator.resetDevelopment(projectId);
+
+    res.json({
+      message: 'Development reset successfully',
+      projectId,
+      reset: true,
+    });
+  } catch (error: any) {
+    console.error('[Magic API] Error resetting development:', error);
+    res.status(500).json({
+      error: {
+        message: 'Failed to reset development',
         ...(process.env.NODE_ENV === 'development' && { stack: error.stack }),
       },
     });
@@ -765,9 +824,35 @@ router.post('/start-development', async (req, res) => {
     }
 
     if (!scrumMasterExec || !scrumMasterExec.output) {
-      return res.status(400).json({
-        error: { message: 'Scrum Master must be completed first' },
-      });
+      // Scrum Master가 없으면 먼저 실행
+      console.log('[Magic API] Scrum Master not found, running Scrum Master first...');
+
+      try {
+        const scrumMasterResult = await orchestrator.runAgent('scrum-master', projectId, {
+          projectId,
+          project: {
+            name: project.name,
+            description: project.description,
+            wizardLevel: project.wizardLevel,
+          },
+          epicStory: epicStoryExec.output,
+          selectedPRD: null, // PRD는 epic story output에서 가져옴
+        });
+
+        if (scrumMasterResult.status !== 'COMPLETED') {
+          throw new Error('Scrum Master execution failed');
+        }
+
+        console.log('[Magic API] ✅ Scrum Master completed, starting development loop...');
+      } catch (error: any) {
+        console.error('[Magic API] Error running Scrum Master:', error);
+        return res.status(500).json({
+          error: {
+            message: 'Failed to run Scrum Master',
+            details: error.message,
+          },
+        });
+      }
     }
 
     // 비동기로 개발 루프 시작 (즉시 응답 전송)

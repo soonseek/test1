@@ -32,6 +32,7 @@ interface DevelopmentViewProps {
   onResumeDevelopment?: () => void;
   onStoryFailure?: (failedTasks: any[]) => void;
   onClearFailure?: () => void;
+  onResetDevelopment?: () => void;
   isDevelopmentPaused?: boolean;
 }
 
@@ -39,7 +40,7 @@ interface Task {
   id: string;
   title: string;
   description: string;
-  status: 'pending' | 'in-progress' | 'completed' | 'failed';
+  status: 'pending' | 'developing' | 'reviewing' | 'testing' | 'completed' | 'failed';
   assignedTo: 'developer' | 'code-reviewer' | 'tester';
   priority: 'high' | 'medium' | 'low';
   storyId: string;
@@ -82,6 +83,7 @@ export default function DevelopmentView({
   onResumeDevelopment,
   onStoryFailure,
   onClearFailure,
+  onResetDevelopment,
   isDevelopmentPaused = false,
 }: DevelopmentViewProps) {
   const toast = useToast();
@@ -98,6 +100,9 @@ export default function DevelopmentView({
   const [showPollingLogs, setShowPollingLogs] = useState<boolean>(false); // 폴링 로그 숨김 기본
   const [autoScrollPaused, setAutoScrollPaused] = useState<boolean>(false); // 로그 자동 스크롤 일시정지
 
+  // Epic & Story 컨테이너 ref (자동 스크롤용)
+  const epicStoryContainerRef = useRef<HTMLDivElement>(null);
+
   // Epic & Story 데이터 로드
   const epicStoryData = useMemo(() => {
     const epicStoryExec = executions.find(e => e.agentId === 'epic-story');
@@ -113,17 +118,30 @@ export default function DevelopmentView({
 
   // Scrum Master 데이터 로드
   const scrumMasterData = useMemo(() => {
-    const scrumMasterExec = executions.find(e => e.agentId === 'scrum-master');
-    if (!scrumMasterExec || !scrumMasterExec.output) {
+    // 가장 최신 Scrum Master 실행 찾기
+    const scrumMasterExecs = executions.filter(e => e.agentId === 'scrum-master');
+    if (scrumMasterExecs.length === 0) {
       return null;
     }
 
+    const latestExec = scrumMasterExecs[scrumMasterExecs.length - 1];
+
+    // 모든 Scrum Master 실행에서 태스크 수집 (이전 Story 태스크 유지)
+    const allTasks = scrumMasterExecs.flatMap(exec =>
+      (exec.output?.tasks || [])
+    );
+
+    // 태스크 ID 중복 제거 (같은 태스크가 여러 실행에 있을 수 있음)
+    const uniqueTasks = Array.from(
+      new Map(allTasks.map((task: Task) => [task.id, task])).values()
+    );
+
     return {
-      currentEpic: scrumMasterExec.output.currentEpic,
-      currentStory: scrumMasterExec.output.currentStory,
-      tasks: scrumMasterExec.output.tasks || [],
-      summary: scrumMasterExec.output.summary || { totalTasks: 0, completedTasks: 0, failedTasks: 0 },
-      taskListMarkdown: scrumMasterExec.output.taskListMarkdown,
+      currentEpic: latestExec.output?.currentEpic,
+      currentStory: latestExec.output?.currentStory,
+      tasks: uniqueTasks,
+      summary: latestExec.output?.summary || { totalTasks: 0, completedTasks: 0, failedTasks: 0 },
+      taskListMarkdown: latestExec.output?.taskListMarkdown,
     };
   }, [executions]);
 
@@ -287,6 +305,56 @@ export default function DevelopmentView({
     }
   }, [storyFailure, onStoryFailure, isRetrying]);
 
+  // 자동으로 다음 스토리로 포커스
+  useEffect(() => {
+    // 현재 선택된 스토리의 모든 태스크가 완료되었는지 확인
+    if (selectedEpicIndex === null || selectedStoryIndex === null) return;
+
+    const currentStory = epicsWithStories[selectedEpicIndex]?.stories[selectedStoryIndex];
+    if (!currentStory || !currentStory.tasks) return;
+
+    const allTasksCompleted = currentStory.tasks.every((t: Task) =>
+      getTaskProgressStatus(t).phase === 'completed'
+    );
+
+    // 모든 태스크가 완료되면 다음 스토리로 자동 이동
+    if (allTasksCompleted && currentStory.tasks.length > 0) {
+      const currentEpic = epicsWithStories[selectedEpicIndex];
+      if (!currentEpic) return;
+
+      // 현재 Epic에서 다음 Story 찾기
+      const nextStoryIndex = selectedStoryIndex + 1;
+      if (nextStoryIndex < currentEpic.stories.length) {
+        // 같은 Epic의 다음 Story
+        setSelectedStoryIndex(nextStoryIndex);
+      } else {
+        // 다음 Epic의 첫 번째 Story
+        const nextEpicIndex = selectedEpicIndex + 1;
+        if (nextEpicIndex < epicsWithStories.length) {
+          setSelectedEpicIndex(nextEpicIndex);
+          setSelectedStoryIndex(0);
+        }
+      }
+    }
+  }, [scrumMasterData?.tasks, epicsWithStories, selectedEpicIndex, selectedStoryIndex]);
+
+  // 현재 진행 중인 스토리로 자동 스크롤
+  useEffect(() => {
+    if (selectedEpicIndex === null || selectedStoryIndex === null) return;
+    if (!epicStoryContainerRef.current) return;
+
+    // 현재 스토리 요소 찾기 (data-current-story 속성으로 식별)
+    const container = epicStoryContainerRef.current;
+    const currentStoryElement = container.querySelector(`[data-story-index="${selectedStoryIndex}"][data-epic-index="${selectedEpicIndex}"]`);
+
+    if (currentStoryElement) {
+      currentStoryElement.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    }
+  }, [selectedEpicIndex, selectedStoryIndex, scrumMasterData?.currentStory]);
+
   // Story의 현재 단계 판단
   const getStoryPhase = (story: Story): StoryPhase => {
     const storyTasks = story.tasks || [];
@@ -309,7 +377,7 @@ export default function DevelopmentView({
     }
 
     // Task가 진행 중이거나 failed
-    const hasInProgressTask = storyTasks.some(t => t.status === 'in-progress');
+    const hasInProgressTask = storyTasks.some(t => t.status === 'developing');
     if (hasInProgressTask) return 'development';
 
     // Code Reviewer가 실행 중인지 확인
@@ -343,7 +411,7 @@ export default function DevelopmentView({
     return labels[phase];
   };
 
-  // Task의 실제 진행 상태 판단 (Developer → Reviewer → Tester)
+  // Task의 실제 진행 상태 판단
   const getTaskProgressStatus = (task: Task): {
     phase: 'pending' | 'development' | 'review' | 'testing' | 'completed' | 'failed';
     label: string;
@@ -351,27 +419,17 @@ export default function DevelopmentView({
     borderColor: string;
     bgColor: string;
   } => {
-    // Task가 실패한 경우
-    if (task.status === 'failed') {
-      return {
-        phase: 'failed',
-        label: '실패',
-        icon: '❌',
-        borderColor: 'border-red-500/40',
-        bgColor: 'bg-red-500/10',
-      };
-    }
-
-    // Developer 실행 결과 확인
-    const developerExec = executions.find(e =>
-      e.agentId === 'developer' &&
-      e.status === 'COMPLETED' &&
-      e.output?.completedTasks?.includes(task.id)
-    );
-
-    // Developer가 아직 완료하지 않은 경우
-    if (!developerExec) {
-      if (task.status === 'in-progress') {
+    // Task 상태에 따라 직접 반환
+    switch (task.status) {
+      case 'failed':
+        return {
+          phase: 'failed',
+          label: '실패',
+          icon: '❌',
+          borderColor: 'border-red-500/40',
+          bgColor: 'bg-red-500/10',
+        };
+      case 'developing':
         return {
           phase: 'development',
           label: '개발 중',
@@ -379,39 +437,7 @@ export default function DevelopmentView({
           borderColor: 'border-yellow-500/40',
           bgColor: 'bg-yellow-500/10',
         };
-      }
-      return {
-        phase: 'pending',
-        label: '대기 중',
-        icon: '⭕',
-        borderColor: 'border-white/20',
-        bgColor: 'bg-white/5',
-      };
-    }
-
-    // Developer에서 실패한 경우
-    if (developerExec?.output?.error?.taskId === task.id || developerExec?.error) {
-      return {
-        phase: 'failed',
-        label: '개발 실패',
-        icon: '❌',
-        borderColor: 'border-red-500/40',
-        bgColor: 'bg-red-500/10',
-      };
-    }
-
-    // Code Reviewer 실행 결과 확인
-    const reviewerExec = executions.find(e =>
-      e.agentId === 'code-reviewer' &&
-      e.status === 'COMPLETED' &&
-      e.output?.completedTasks?.includes(task.id)
-    );
-
-    // Code Reviewer가 아직 실행되지 않은 경우 (개발 완료)
-    if (!reviewerExec) {
-      // Reviewer가 현재 실행 중인지 확인
-      const reviewerRunning = executions.find(e => e.agentId === 'code-reviewer' && e.status === 'RUNNING');
-      if (reviewerRunning) {
+      case 'reviewing':
         return {
           phase: 'review',
           label: '리뷰 중',
@@ -419,75 +445,32 @@ export default function DevelopmentView({
           borderColor: 'border-blue-500/40',
           bgColor: 'bg-blue-500/10',
         };
-      }
-      return {
-        phase: 'development',
-        label: '개발 완료',
-        icon: '🔨',
-        borderColor: 'border-purple-500/40',
-        bgColor: 'bg-purple-500/10',
-      };
-    }
-
-    // Reviewer에서 실패한 경우
-    if (reviewerExec?.output?.error?.taskId === task.id) {
-      return {
-        phase: 'failed',
-        label: '리뷰 실패',
-        icon: '❌',
-        borderColor: 'border-red-500/40',
-        bgColor: 'bg-red-500/10',
-      };
-    }
-
-    // Tester 실행 결과 확인
-    const testerExec = executions.find(e =>
-      e.agentId === 'tester' &&
-      e.status === 'COMPLETED' &&
-      e.output?.completedTasks?.includes(task.id)
-    );
-
-    // Tester가 아직 실행되지 않은 경우 (리뷰 완료)
-    if (!testerExec) {
-      // Tester가 현재 실행 중인지 확인
-      const testerRunning = executions.find(e => e.agentId === 'tester' && e.status === 'RUNNING');
-      if (testerRunning) {
+      case 'testing':
         return {
           phase: 'testing',
           label: '테스트 중',
           icon: '🧪',
-          borderColor: 'border-cyan-500/40',
-          bgColor: 'bg-cyan-500/10',
+          borderColor: 'border-purple-500/40',
+          bgColor: 'bg-purple-500/10',
         };
-      }
-      return {
-        phase: 'review',
-        label: '리뷰 완료',
-        icon: '🔍',
-        borderColor: 'border-blue-500/40',
-        bgColor: 'bg-blue-500/10',
-      };
+      case 'completed':
+        return {
+          phase: 'completed',
+          label: '완료',
+          icon: '✅',
+          borderColor: 'border-green-500/40',
+          bgColor: 'bg-green-500/10',
+        };
+      case 'pending':
+      default:
+        return {
+          phase: 'pending',
+          label: '대기 중',
+          icon: '⭕',
+          borderColor: 'border-white/20',
+          bgColor: 'bg-white/5',
+        };
     }
-
-    // Tester에서 실패한 경우
-    if (testerExec?.output?.error?.taskId === task.id) {
-      return {
-        phase: 'failed',
-        label: '테스트 실패',
-        icon: '❌',
-        borderColor: 'border-red-500/40',
-        bgColor: 'bg-red-500/10',
-      };
-    }
-
-    // 모든 단계 완료
-    return {
-      phase: 'completed',
-      label: '완료',
-      icon: '✅',
-      borderColor: 'border-green-500/40 shadow-glow',
-      bgColor: 'bg-green-500/10',
-    };
   };
 
   const startDevelopment = async () => {
@@ -573,18 +556,18 @@ export default function DevelopmentView({
   // Epic & Story 생성 중이거나, 개발이 시작되지 않았고 실행 중인 에이전트가 없을 때 초기 화면 표시
   if (isEpicStoryRunning || (!developmentStarted && !latestExecution && !scrumMasterData)) {
     return (
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-        <div className="text-center py-12">
-          <div className="text-6xl mb-4">💻</div>
-          <h2 className="text-2xl font-bold text-white mb-4">BMad Method 기반 개발</h2>
-          <p className="text-white/70 mb-8 max-w-2xl mx-auto">
+      <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-3 border border-white/20">
+        <div className="text-center py-8">
+          <div className="text-5xl mb-3">💻</div>
+          <h2 className="text-xl font-bold text-white mb-3">BMad Method 기반 개발</h2>
+          <p className="text-white/70 mb-4 max-w-2xl mx-auto text-sm">
             Scrum Master가 Epic & Story를 분석하여 Task List를 생성하고,<br />
             Developer가 개발을 수행하며 Code Reviewer와 Tester가 품질을 검증합니다.
           </p>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 max-w-4xl mx-auto">
-            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
-              <div className="text-3xl mb-2">🎯</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 mb-4 max-w-4xl mx-auto">
+            <div className="bg-white/5 rounded-lg p-2 border border-white/10">
+              <div className="text-2xl mb-1">🎯</div>
               <h3 className="text-white font-semibold mb-1">Scrum Master</h3>
               <p className="text-white/60 text-sm">Task List 생성/관리</p>
             </div>
@@ -628,137 +611,128 @@ export default function DevelopmentView({
             <span className="text-white/50 text-xs">(최대 5회)</span>
           </div>
 
-          <button
-            onClick={startDevelopment}
-            className="px-8 py-3 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg text-lg transition-all"
-          >
-            🚀 개발 시작하기
-          </button>
+          {/* 개발 시작 / 처음부터 다시 개발 버튼 */}
+          {scrumMasterData && scrumMasterData.tasks && scrumMasterData.tasks.length > 0 ? (
+            <div className="flex gap-4">
+              <button
+                onClick={startDevelopment}
+                className="px-8 py-3 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg text-lg transition-all"
+              >
+                ▶️ 이어서 개발하기
+              </button>
+              {onResetDevelopment && (
+                <button
+                  onClick={async () => {
+                    if (confirm('정말 처음부터 다시 개발하시겠습니까?\n\n요구사항 분석, Epic & Story는 유지되고,\n스크럼 마스터, 개발, 테스트 등은 초기화됩니다.')) {
+                      await onResetDevelopment();
+                      window.location.reload();
+                    }
+                  }}
+                  className="px-8 py-3 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white font-semibold rounded-lg text-lg transition-all border-2 border-red-400/50"
+                >
+                  🔄 처음부터 다시 개발
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={startDevelopment}
+              className="px-8 py-3 bg-gradient-to-r from-purple-600 to-amber-500 hover:from-purple-700 hover:to-amber-600 text-white font-semibold rounded-lg text-lg transition-all"
+            >
+              🚀 개발 시작하기
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
-  // ========== 3열 레이아웃 개발 진행 중 UI (1:1:2 비율) ==========
+  // ========== 2열 레이아웃 개발 진행 중 UI (1:3 비율) ==========
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-2">
       {/* ========== 1열: 개발 진행 상황 + Epic/Story ========== */}
-      <div className="lg:col-span-1 space-y-5">
-        {/* 개발 진행 상황 카드 */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border-2 border-white/20 shadow-card">
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                <span className="text-xl">📊</span>
-                개발 진행 상황
-              </h2>
-              <div className="flex items-center gap-2">
-                <div className="text-right">
-                  <div className="text-4xl font-bold bg-gradient-to-r from-vivid-purple to-amber-500 bg-clip-text text-transparent leading-tight">
-                    {overallProgress.toFixed(1)}%
-                  </div>
-                  <div className="text-white/70 text-sm font-medium mt-1">
-                    {completedPoints} / {totalPoints} Points
-                  </div>
-                </div>
-                {/* 일시정지/재개 버튼 - 상호 배타적 표시 */}
-                {(() => {
-                  const isRunning = latestExecution?.status === 'RUNNING';
-                  const isPaused = !isRunning && scrumMasterData?.tasks?.some((t: Task) => t.status === 'completed');
-                  return isRunning ? (
-                    onPauseDevelopment && (
-                      <button
-                        onClick={onPauseDevelopment}
-                        className="p-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg transition-all border-2 border-amber-500/30"
-                        title="개발 일시정지"
-                      >
-                        <Pause size={16} />
-                      </button>
-                    )
-                  ) : isPaused ? (
-                    <div className="flex items-center gap-2">
-                      {/* 재시도 횟수 설정 - 일시정지 상태일 때만 표시 */}
-                      <div className="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1 border border-white/20">
-                        <span className="text-white/70 text-xs">재시도:</span>
-                        <button
-                          onClick={() => setMaxRetries(Math.max(1, maxRetries - 1))}
-                          disabled={maxRetries <= 1}
-                          className="w-5 h-5 flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white text-xs rounded transition-all"
-                        >
-                          -
-                        </button>
-                        <span className="text-white text-sm font-semibold w-4 text-center">{maxRetries}</span>
-                        <button
-                          onClick={() => setMaxRetries(Math.min(5, maxRetries + 1))}
-                          disabled={maxRetries >= 5}
-                          className="w-5 h-5 flex items-center justify-center bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white text-xs rounded transition-all"
-                        >
-                          +
-                        </button>
-                      </div>
-                      {onResumeDevelopment && (
-                        <button
-                          onClick={() => onResumeDevelopment()}
-                          className="p-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg transition-all border-2 border-green-500/30"
-                          title="개발 재개"
-                        >
-                          <Play size={16} />
-                        </button>
-                      )}
-                    </div>
-                  ) : null;
-                })()}
-              </div>
-            </div>
-
-            {/* 진행률 바 */}
-
-            {/* Progress Bar */}
-            <div className="w-full bg-white/10 rounded-full h-3 mb-4 shadow-inner-glow overflow-hidden">
+      <div className="lg:col-span-1 space-y-2">
+        {/* 개발 진행 상황 카드 (간소화) */}
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-2 border-2 border-white/20 shadow-card">
+          {/* 헤더 + 진행률 + 컨트롤 */}
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="text-xs font-semibold text-white">📊</h2>
+            <div className="flex-1 bg-white/10 rounded-full h-2 overflow-hidden">
               <div
-                className="bg-gradient-to-r from-purple-600 via-vivid-purple to-amber-500 h-3 rounded-full transition-all duration-700 ease-out shadow-glow relative"
+                className="bg-gradient-to-r from-purple-600 to-amber-500 h-2 rounded-full transition-all duration-700 ease-out"
                 style={{ width: `${overallProgress}%` }}
-              >
-                <div className="absolute inset-0 bg-white/20 animate-shimmer"></div>
-              </div>
+              />
             </div>
+            <span className="text-sm font-bold text-white tabular-nums w-10 text-right">{overallProgress.toFixed(0)}%</span>
 
-            {/* "Currently Working On"은 실제 개발이 시작되었을 때만 표시 */}
-            {!isEpicStoryRunning && scrumMasterData?.currentEpic && scrumMasterData?.currentStory && scrumMasterData?.tasks?.length > 0 ? (
-              <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-                <p className="text-white/50 text-xs mb-1 font-medium">🎯 Currently Working On:</p>
-                <p className="text-white text-sm font-medium">
-                  Epic {scrumMasterData.currentEpic.order} - {scrumMasterData.currentEpic.title}
-                </p>
-                <p className="text-white/80 text-xs mt-1">
-                  {scrumMasterData.currentStory.title}
-                </p>
-              </div>
-            ) : scrumMasterData?.summary?.totalTasks === 0 ? (
-              <div className="bg-yellow-500/10 rounded-lg p-3 border border-yellow-500/30">
-                <p className="text-yellow-300 text-sm font-medium">⏳ Task List 생성 대기 중...</p>
-              </div>
-            ) : (
-              <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-                <p className="text-white/70 text-sm">개발 준비 중</p>
-              </div>
-            )}
+            {/* 일시정지/재개 버튼 */}
+            {(() => {
+              const isRunning = latestExecution?.status === 'RUNNING';
+              const isPaused = !isRunning && scrumMasterData?.tasks?.some((t: Task) => t.status === 'completed');
+              return isRunning ? (
+                onPauseDevelopment && (
+                  <button
+                    onClick={onPauseDevelopment}
+                    className="p-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded transition-all border border-amber-500/30"
+                    title="일시정지"
+                  >
+                    <Pause size={12} />
+                  </button>
+                )
+              ) : isPaused ? (
+                onResumeDevelopment && (
+                  <button
+                    onClick={() => onResumeDevelopment()}
+                    className="p-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded transition-all border border-green-500/30"
+                    title="재개"
+                  >
+                    <Play size={12} />
+                  </button>
+                )
+              ) : null;
+            })()}
           </div>
 
-          {/* 현재 실행 중인 에이전트 */}
+          {/* 현재 작업 중인 Story (간소화) */}
+          {!isEpicStoryRunning && scrumMasterData?.currentEpic && scrumMasterData?.currentStory ? (
+            <div className="bg-white/5 rounded p-1.5 border border-white/10">
+              <p className="text-white/60 text-xs truncate">
+                Epic {scrumMasterData.currentEpic.order} • {scrumMasterData.currentStory.title}
+              </p>
+            </div>
+          ) : scrumMasterData?.summary?.totalTasks === 0 ? (
+            <div className="bg-yellow-500/10 rounded p-1.5 border border-yellow-500/30">
+              <p className="text-yellow-300 text-xs truncate">⏳ Task 생성 대기 중...</p>
+            </div>
+          ) : null}
+
+          {/* 현재 실행 중인 에이전트 (간소화) */}
           {!storyFailure && latestExecution && latestExecution.status === 'RUNNING' && (
-            <div className="flex items-center gap-3 py-3 px-4 bg-yellow-500/10 border-2 border-yellow-500/40 rounded-xl animate-pulse-glow shadow-glow">
-              <div className="animate-spin w-5 h-5 border-3 border-yellow-400 border-t-transparent rounded-full"></div>
-              <div className="flex-1">
-                <p className="text-yellow-300 text-sm font-semibold">
-                  ⚡ {latestExecution.agentName}
-                </p>
-                <p className="text-yellow-200/70 text-xs">Running...</p>
-              </div>
+            <div className="flex items-center gap-2 py-1 px-2 bg-yellow-500/10 border border-yellow-500/40 rounded animate-pulse-glow">
+              <div className="animate-spin w-3 h-3 border-2 border-yellow-400 border-t-transparent rounded-full flex-shrink-0"></div>
+              <p className="text-yellow-300 text-xs font-medium truncate flex-1">
+                {latestExecution.agentName}
+              </p>
             </div>
           )}
 
-          {/* 이어서 계속 진행 버튼 (중단 상태일 때만 표시) */}
+          {/* 처음부터 다시 개발 버튼 (간소화) */}
+          {onResetDevelopment && (
+            <button
+              onClick={async () => {
+                if (confirm('정말 처음부터 다시 개발하시겠습니까?\n\n요구사항 분석, Epic & Story는 유지되고,\n스크럼 마스터, 개발, 테스트 등은 초기화됩니다.')) {
+                  await onResetDevelopment();
+                  window.location.reload();
+                }
+              }}
+              className="w-full px-2 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-300 rounded text-xs font-medium transition-all border border-red-500/30 hover:border-red-500/50 flex items-center justify-center gap-1"
+              title="처음부터 다시 개발"
+            >
+              🔄 리셋
+            </button>
+          )}
+
+          {/* 이어서 계속 진행 버튼 (간소화) */}
           {(() => {
             const hasRunningAgent = latestExecution?.status === 'RUNNING';
             const hasCompletedTasks = scrumMasterData?.tasks?.some((t: Task) => t.status === 'completed');
@@ -769,10 +743,9 @@ export default function DevelopmentView({
               return (
                 <button
                   onClick={startDevelopment}
-                  className="w-full px-5 py-3 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white rounded-xl text-sm transition-all border-2 border-orange-400/50 font-semibold shadow-glow flex items-center justify-center gap-2 animate-pulse-glow"
+                  className="w-full px-2 py-1.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white rounded text-xs transition-all border border-orange-400/50 font-semibold shadow-glow flex items-center justify-center gap-1 animate-pulse-glow"
                 >
-                  <span className="text-base">▶️</span>
-                  이어서 계속 진행
+                  ▶️ 계속 진행
                 </button>
               );
             }
@@ -781,18 +754,23 @@ export default function DevelopmentView({
         </div>
 
         {/* Epic & Story Branch View */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-white/20 shadow-card">
-          <h3 className="text-white font-semibold mb-4 text-base flex items-center gap-2">
-            <span className="text-lg">📚</span>
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-3 border-2 border-white/20 shadow-card">
+          <h3 className="text-white font-semibold mb-2 text-sm flex items-center gap-2">
+            <span className="text-base">📚</span>
             Epics & Stories
           </h3>
-          <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2 custom-scroll">
+          <div ref={epicStoryContainerRef} className="space-y-2 max-h-[600px] overflow-y-auto pr-2 custom-scroll">
             {epicsWithStories.map((epic: any, epicIndex: number) => {
               const totalStories = epic.stories.length;
               const completedStories = epic.stories.filter((s: Story) =>
                 s.tasks.length > 0 && s.tasks.every((t: Task) => getTaskProgressStatus(t).phase === 'completed')
               ).length;
-              const epicProgress = totalStories > 0 ? (completedStories / totalStories) * 100 : 0;
+              // 포인트 기준 진행률 계산
+              const totalPoints = epic.stories.reduce((sum: number, s: Story) => sum + (s.storyPoints || 0), 0);
+              const completedPoints = epic.stories
+                .filter((s: Story) => s.tasks.length > 0 && s.tasks.every((t: Task) => getTaskProgressStatus(t).phase === 'completed'))
+                .reduce((sum: number, s: Story) => sum + (s.storyPoints || 0), 0);
+              const epicProgress = totalPoints > 0 ? (completedPoints / totalPoints) * 100 : 0;
               const isCurrentEpic = scrumMasterData?.currentEpic?.order === epic.order;
 
               return (
@@ -834,7 +812,7 @@ export default function DevelopmentView({
                   </div>
 
                   {/* Stories under Epic */}
-                  <div className="ml-5 mt-2 space-y-2">
+                  <div className="ml-3 mt-1 space-y-1">
                     {epic.stories.map((story: any, storyIndex: number) => {
                       const storyTasks = story.tasks || [];
                       const allTasksCompleted = storyTasks.length > 0 && storyTasks.every((t: Task) => getTaskProgressStatus(t).phase === 'completed');
@@ -846,11 +824,13 @@ export default function DevelopmentView({
                       return (
                         <div
                           key={story.id}
+                          data-epic-index={epicIndex}
+                          data-story-index={storyIndex}
                           onClick={() => {
                             setSelectedEpicIndex(epicIndex);
                             setSelectedStoryIndex(storyIndex);
                           }}
-                          className={`p-3 rounded-lg cursor-pointer transition-all border-2 ${
+                          className={`p-2 rounded-lg cursor-pointer transition-all border-2 ${
                             selectedEpicIndex === epicIndex && selectedStoryIndex === storyIndex
                               ? 'bg-purple-500/40 border-purple-500 shadow-glow'
                               : isCurrentStory
@@ -859,19 +839,24 @@ export default function DevelopmentView({
                           } ${shouldPulse ? 'animate-pulse-glow' : ''}`}
                         >
                           <div className="flex items-center justify-between">
-                            <span className="text-white/90 text-sm font-medium">{story.title}</span>
-                            <div className="flex items-center gap-2">
+                            <span className="text-white/90 text-sm font-medium truncate flex-1">{story.title}</span>
+                            <div className="flex items-center gap-1.5">
+                              {story.storyPoints && (
+                                <span className="text-xs text-amber-400/90 bg-amber-500/10 px-1.5 py-0.5 rounded font-medium">
+                                  {story.storyPoints}pt
+                                </span>
+                              )}
                               {storyTasks.length > 0 && (
-                                <span className="text-xs text-white/60 bg-white/10 px-2 py-0.5 rounded font-medium">
-                                  {storyTasks.length}
+                                <span className="text-xs text-white/60 bg-white/10 px-1.5 py-0.5 rounded font-medium">
+                                  {storyTasks.length}t
                                 </span>
                               )}
                               {allTasksCompleted && (
-                                <span className="text-green-400 text-base animate-scale-in">✓</span>
+                                <span className="text-green-400 text-sm">✓</span>
                               )}
                               {/* 일시정지 또는 실패 상태이면 스피너 숨김 */}
                               {someTasksCompleted && !allTasksCompleted && !isDevelopmentPaused && !storyFailure && (
-                                <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+                                <div className="w-3 h-3 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
                               )}
                             </div>
                           </div>
@@ -886,10 +871,10 @@ export default function DevelopmentView({
         </div>
       </div>
 
-      {/* ========== 2열: Tasks ========== */}
-      <div className="lg:col-span-1 space-y-5">
+      {/* ========== 2열: Tasks (확대) ========== */}
+      <div className="lg:col-span-3 space-y-2">
         {/* Tasks Header */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-white/20 shadow-card">
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-3 border-2 border-white/20 shadow-card">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-white font-semibold text-base flex items-center gap-2">
               <span className="text-lg">✅</span>
@@ -912,24 +897,24 @@ export default function DevelopmentView({
             )}
           </div>
 
-          {/* 현재 선택된 Story의 Tasks */}
+          {/* 현재 선택된 Story의 Tasks - 3열 그리드 */}
           {selectedEpicIndex !== null && selectedStoryIndex !== null ? (
-            <div className="space-y-3 max-h-[550px] overflow-y-auto pr-2 custom-scroll">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 max-h-[600px] overflow-y-auto pr-2 custom-scroll">
               {epicsWithStories[selectedEpicIndex]?.stories[selectedStoryIndex]?.tasks.map((task: Task) => {
                 const progressStatus = getTaskProgressStatus(task);
-                const isTaskRunning = latestExecution?.agentId === 'developer' && task.status === 'in-progress';
+                const isTaskRunning = latestExecution?.agentId === 'developer' && task.status === 'developing';
 
                 return (
                   <div
                     key={task.id}
-                    className={`p-4 rounded-xl border-2 transition-all shadow-card ${progressStatus.bgColor} ${progressStatus.borderColor} ${
-                      progressStatus.phase === 'development' && task.status === 'in-progress' ? 'animate-pulse-glow' : ''
+                    className={`p-3 rounded-xl border-2 transition-all shadow-card ${progressStatus.bgColor} ${progressStatus.borderColor} ${
+                      progressStatus.phase === 'development' && task.status === 'developing' ? 'animate-pulse-glow' : ''
                     }`}
                   >
                     <div className="flex items-start gap-3">
                       {/* Status Icon */}
                       <div className="flex-shrink-0 mt-1">
-                        {progressStatus.phase === 'development' && task.status === 'in-progress' ? (
+                        {progressStatus.phase === 'development' && task.status === 'developing' ? (
                           <div className="w-5 h-5 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
                         ) : (
                           <span className={`text-lg ${progressStatus.phase === 'completed' ? 'text-green-400 animate-scale-in' : progressStatus.phase === 'failed' ? 'text-red-400' : 'text-white/70'}`}>
@@ -946,7 +931,9 @@ export default function DevelopmentView({
                             <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
                           )}
                         </div>
-                        <p className="text-white/70 text-sm break-words">{task.description}</p>
+                        <p className="text-white/70 text-xs line-clamp-2" title={task.description}>
+                          {task.description}
+                        </p>
 
                         {/* Bottom Row: Priority Badge + Progress Status */}
                         <div className="mt-2 flex items-center gap-2">
@@ -1172,81 +1159,6 @@ export default function DevelopmentView({
             </div>
           </div>
         )}
-
-        {/* Agent Logs */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-5 border-2 border-white/20 shadow-card">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-base font-semibold text-white flex items-center gap-2">
-              <span className="text-lg">📜</span>
-              Agent Output
-            </h3>
-            <div className="flex items-center gap-2">
-              {/* 자동 스크롤 일시정지 토글 */}
-              <button
-                onClick={() => setAutoScrollPaused(!autoScrollPaused)}
-                className={`px-3 py-1.5 text-xs rounded-lg transition-all border-2 font-medium ${
-                  autoScrollPaused
-                    ? 'bg-red-500/20 border-red-500/50 text-red-300'
-                    : 'bg-green-500/20 border-green-500/50 text-green-300'
-                }`}
-                title={autoScrollPaused ? '로그 자동 스크롤 재생' : '로그 자동 스크롤 일시정지'}
-              >
-                {autoScrollPaused ? <Pause size={14} /> : <Play size={14} />}
-              </button>
-              {/* 폴링 로그 토글 */}
-              <button
-                onClick={() => setShowPollingLogs(!showPollingLogs)}
-                className={`px-3 py-1.5 text-xs rounded-lg transition-all border-2 font-medium ${
-                  showPollingLogs
-                    ? 'bg-orange-500/20 border-orange-500/50 text-orange-300'
-                    : 'bg-white/10 border-white/20 text-white/60 hover:text-white hover:border-white/40'
-                }`}
-                title="폴링 관련 로그 표시/숨기기"
-              >
-                {showPollingLogs ? '📡' : '🚫'}
-              </button>
-              {/* 라인 필터 버튼 */}
-              <div className="flex items-center gap-1.5">
-                {[10, 50, 100, 200].map((count) => (
-                  <button
-                    key={count}
-                    onClick={() => setLogLineCount(count)}
-                    className={`px-3 py-1.5 text-xs rounded-lg transition-all font-semibold border-2 ${
-                      logLineCount === count
-                        ? 'bg-vivid-purple/30 border-vivid-purple text-white shadow-glow'
-                        : 'bg-white/10 border-white/20 text-white/60 hover:text-white hover:border-white/40'
-                    }`}
-                  >
-                    {count}
-                  </button>
-                ))}
-              </div>
-              {/* 상태 표시 */}
-              <div className={`w-3 h-3 rounded-full border-2 ${agentLogs.length > 0 ? 'bg-green-400 border-green-300 animate-pulse shadow-glow' : 'bg-gray-400 border-gray-300'}`}></div>
-            </div>
-          </div>
-
-          {/* 로그 출력 (하단 스크롤 고정) */}
-          <div
-            ref={logContainerRef}
-            className="bg-gray-900/90 rounded-xl p-4 overflow-y-auto max-h-[450px] custom-scroll text-sm border-2 border-white/10"
-          >
-            {agentLogs.length > 0 ? (
-              <pre className="text-green-400 font-mono whitespace-pre-wrap leading-relaxed">
-                {agentLogs.join('\n')}
-              </pre>
-            ) : (
-              <div className="text-center py-12">
-                <div className="text-gray-400 text-3xl mb-2">
-                  {showPollingLogs ? '⏳' : '🔇'}
-                </div>
-                <div className="text-gray-400 text-sm">
-                  {showPollingLogs ? '에이전트 로그를 불러오는 중...' : '필터링된 로그가 없습니다.'}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
       </div>
 
       {/* ========== Task List 모달 ========== */}

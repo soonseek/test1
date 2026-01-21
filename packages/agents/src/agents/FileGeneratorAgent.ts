@@ -47,9 +47,10 @@ export class FileGeneratorAgent extends Agent {
       name: 'File Generator',
       role: '코드 파일 생성 전문',
       trigger: {
-        type: 'manual',
+        type: 'dependency_satisfied',
+        dependencies: ['developer'],
       },
-      completionMode: CompletionMode.MANUAL_CLOSE,
+      completionMode: CompletionMode.AUTO_CLOSE,
       maxRetries: 2,
       timeout: 900, // 15분
       dependencies: ['developer'],
@@ -296,7 +297,7 @@ export default function Home() {
 
       throw new Error(
         `파일 생성 실패: LLM 응답에서 파일을 찾을 수 없습니다.\n` +
-        `예상 형식: "## 파일: [path]\\n\\n```lang\\ncode\\n```"\n` +
+        `예상 형식: "## 파일: [path]\n\n\`\`\`lang\ncode\n\`\`\`"\n` +
         `응답 길이: ${text.length} 바이트\n` +
         `응답 미리보기:\n${text.substring(0, 300)}...`
       );

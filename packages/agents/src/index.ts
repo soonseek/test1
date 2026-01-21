@@ -2,6 +2,7 @@ export * from './agents/RequirementAnalyzerAgent';
 export * from './agents/EpicStoryAgent';
 export * from './agents/ScrumMasterAgent';
 export * from './agents/DeveloperAgent';
+export * from './agents/FileGeneratorAgent';
 export * from './agents/CodeReviewerAgent';
 export * from './agents/TesterAgent';
 export * from './agents/PromptBuilderAgent';

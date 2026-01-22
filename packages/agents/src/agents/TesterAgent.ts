@@ -1219,22 +1219,29 @@ Category: ui, api, database, integration, edge-case
       const output = scrumMasterExec.output as any;
       const task = output.tasks?.find((t: any) => t.status === 'testing');
 
-      if (task) {
-        task.status = status;
-
-        // 데이터베이스 업데이트
-        await prisma.agentExecution.update({
-          where: { id: scrumMasterExec.id },
-          data: {
-            output: output as any,
-          },
+      if (!task) {
+        await this.log('Task 상태 업데이트 실패: testing 상태인 task를 찾을 수 없음', {
+          totalTasks: output.tasks?.length || 0,
+          taskStatuses: output.tasks?.map((t: any) => `${t.id}:${t.status}`).join(', ') || 'none',
         });
-
-        await this.log('Task 상태 업데이트 완료', {
-          taskId: task.id,
-          status,
-        });
+        return;
       }
+
+      task.status = status;
+
+      // 데이터베이스 업데이트
+      await prisma.agentExecution.update({
+        where: { id: scrumMasterExec.id },
+        data: {
+          output: output as any,
+        },
+      });
+
+      await this.log('Task 상태 업데이트 완료', {
+        taskId: task.id,
+        oldStatus: 'testing',
+        newStatus: status,
+      });
     } catch (error) {
       await this.logError(error as Error);
     }

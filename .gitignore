@@ -30,6 +30,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 /debug-llm-responses
+/apps/api/debug-llm-responses
 
 # Local env files
 .env

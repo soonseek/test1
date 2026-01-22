@@ -400,72 +400,66 @@ export class ScrumMasterAgent extends Agent {
     // 각 스토리별 태스크 완료 현황 추적
     const storyTaskCompletion = new Map<string, { totalTasks: number; completedTasks: number; storyKey: string }>();
 
-    // 1. 먼저 Scrum Master 실행에서 각 스토리의 총 태스크 수 확인
-    // 가장 최신 Scrum Master 실행만 사용 (역순으로 확인하며 첫 번째 것만 사용)
+    // 1. 각 story별로 모든 실행에서 완료된 태스크 누적 계산
+    // storyKey -> { totalTasks: number, completedTaskIds: Set<string> }
+    const storyTaskTracking = new Map<string, { totalTasks: number; completedTaskIds: Set<string>; storyKey: string }>();
+
     for (const exec of previousExecution) {
-      if (exec.agentId === 'scrum-master') {
+      if (exec.agentId === 'scrum-master' && exec.status === 'COMPLETED') {
         const output = exec.output as any;
         if (output && output.currentStory && output.tasks && output.tasks.length > 0) {
           const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
 
-          // 가장 최신(최근) 실행만 기록
-          if (!storyTaskCompletion.has(storyKey)) {
-            storyTaskCompletion.set(storyKey, {
+          // 해당 story의 데이터가 없으면 초기화
+          if (!storyTaskTracking.has(storyKey)) {
+            storyTaskTracking.set(storyKey, {
               totalTasks: output.tasks.length,
-              completedTasks: 0,
+              completedTaskIds: new Set<string>(),
               storyKey,
             });
-            await this.log(`Story 총 태스크 수 확인: ${storyKey} (${output.tasks.length}개)`, {
-              totalTasks: output.tasks.length,
-            });
           }
-        }
-      }
-    }
 
-    // 2. Scrum Master 실행 결과에서 완료된 태스크 수 확인 (Developer 실행 횟수가 아닌 실제 task status 확인)
-    // storyKey별로 가장 최신의 Scrum Master 실행 결과를 저장
-    const latestScrumMasterOutputs = new Map<string, any>();
-
-    for (const exec of previousExecution) {
-      if (exec.agentId === 'scrum-master') {
-        const output = exec.output as any;
-        if (output && output.currentStory) {
-          const storyKey = `${output.currentStory.epicOrder}-${output.currentStory.storyOrder}`;
-          // 같은 story에 대한 여러 실행 중 가장 최신 것(나중에 실행된 것)만 저장
-          latestScrumMasterOutputs.set(storyKey, output);
-        }
-      }
-    }
-
-    // 각 story별 완료 상태 확인
-    for (const [storyKey, output] of latestScrumMasterOutputs) {
-      if (output.tasks && output.tasks.length > 0) {
-        const completion = storyTaskCompletion.get(storyKey);
-
-        if (completion) {
-          // 해당 story의 tasks 중 status가 'completed', 'reviewing', 'testing', 'developing'인 것들을 카운트
-          // developing: 개발 중, reviewing: 리뷰 중, testing: 테스트 중, completed: 완료
-          // 최종적으로 completed인 것만 완료로 간주
-          const completedCount = output.tasks.filter((t: any) => t.status === 'completed').length;
-          const inProgressCount = output.tasks.filter((t: any) => ['developing', 'reviewing', 'testing'].includes(t.status)).length;
-          completion.completedTasks = completedCount;
-
-          await this.log(`Story 태스크 완료 현황: ${storyKey}`, {
-            totalTasks: completion.totalTasks,
-            completedTasks: completedCount,
-            inProgressTasks: inProgressCount,
+          // 완료된 태스크 ID 수집
+          const tracking = storyTaskTracking.get(storyKey)!;
+          output.tasks.forEach((task: any) => {
+            if (task.status === 'completed') {
+              tracking.completedTaskIds.add(task.id);
+            }
           });
 
-          // 모든 태스크가 완료되었는지 확인 (최종적으로 completed 상태인 것만)
-          if (completion.completedTasks >= completion.totalTasks && completion.totalTasks > 0) {
-            completedStories.add(storyKey);
-            await this.log(`✅ Story 완료 확인: ${storyKey}`, {
-              totalTasks: completion.totalTasks,
-              completedTasks: completion.completedTasks,
-            });
-          }
+          await this.log(`Story 실행 결과 처리: ${storyKey}`, {
+            totalTasks: output.tasks.length,
+            newCompletedTasks: output.tasks.filter((t: any) => t.status === 'completed').length,
+            accumulatedCompleted: tracking.completedTaskIds.size,
+            startedAt: exec.startedAt,
+          });
         }
+      }
+    }
+
+    // 2. 각 story별 완료 상태 확인
+    for (const [storyKey, tracking] of storyTaskTracking) {
+      const completedCount = tracking.completedTaskIds.size;
+      const totalCount = tracking.totalTasks;
+
+      storyTaskCompletion.set(storyKey, {
+        totalTasks: totalCount,
+        completedTasks: completedCount,
+        storyKey,
+      });
+
+      await this.log(`Story 태스크 완료 현황 최종: ${storyKey}`, {
+        totalTasks: totalCount,
+        completedTasks: completedCount,
+      });
+
+      // 모든 태스크가 완료되었는지 확인
+      if (completedCount >= totalCount && totalCount > 0) {
+        completedStories.add(storyKey);
+        await this.log(`✅ Story 완료 확인: ${storyKey}`, {
+          totalTasks: totalCount,
+          completedTasks: completedCount,
+        });
       }
     }
 

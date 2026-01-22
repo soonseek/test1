@@ -863,6 +863,26 @@ export class MagicOrchestrator {
         return t.epicOrder === currentEpicOrder;
       }) || [];
 
+      // 진행 중인 Task 확인 (developing, reviewing, testing)
+      const inProgressTasks = scrumMasterOutput.tasks?.filter((t: any) => {
+        if (!['developing', 'reviewing', 'testing'].includes(t.status)) return false;
+        if (currentEpicOrder === -1) return true;
+        return t.epicOrder === currentEpicOrder;
+      }) || [];
+
+      // 진행 중인 Task가 있는지 경고 로그
+      if (inProgressTasks.length > 0) {
+        console.log(`[Orchestrator] ⚠️ 진행 중인 Task 발견: ${inProgressTasks.length}개`);
+        inProgressTasks.forEach((t: any) => {
+          console.log(`[Orchestrator]   - ${t.id}: ${t.status} - ${t.title}`);
+        });
+        // 진행 중인 Task가 있으면 첫 번째를 pending으로 되돌림 (복구 로직)
+        const firstInProgress = inProgressTasks[0];
+        console.log(`[Orchestrator] 🔄 진행 중이던 Task ${firstInProgress.id}를 pending으로 되돌려 재시도합니다.`);
+        await this.updateTaskStatus(projectId, firstInProgress.id, 'pending');
+        continue; // 다음 iteration에서 이 task를 다시 시도
+      }
+
       // 완료된 Task 확인
       const completedTasks = scrumMasterOutput.tasks?.filter((t: any) => {
         if (t.status !== 'completed') return false;
@@ -871,7 +891,7 @@ export class MagicOrchestrator {
       }) || [];
 
       // 모든 Task가 완료된 경우 - 다음 Story로 넘어가기 위해 Scrum Master 재실행
-      if (pendingTasks.length === 0) {
+      if (pendingTasks.length === 0 && inProgressTasks.length === 0) {
         console.log(`[Orchestrator] ✅ All ${completedTasks.length} tasks completed for Epic ${currentEpicOrder}`);
 
         if (completedTasks.length > 0) {

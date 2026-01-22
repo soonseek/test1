@@ -3,11 +3,11 @@ const prisma = new PrismaClient();
 
 async function main() {
   const project = await prisma.project.findUnique({
-    where: { id: 'cmkly9k5c000a2wllaq0f6pzf' }
+    where: { id: 'cmknsr6100000bnrrc3wjymlg' }
   });
 
   if (!project) {
-    console.log('프로젝트를 찾을 수 없습니다: cmkly9k5c000a2wllaq0f6pzf');
+    console.log('프로젝트를 찾을 수 없습니다: cmknsr6100000bnrrc3wjymlg');
     console.log('\n최근 프로젝트 목록:');
     const allProjects = await prisma.project.findMany({
       select: { id: true, name: true, createdAt: true },
@@ -23,7 +23,7 @@ async function main() {
 
   const executions = await prisma.agentExecution.findMany({
     where: {
-      projectId: 'cmkly9k5c000a2wllaq0f6pzf'
+      projectId: 'cmknsr6100000bnrrc3wjymlg'
     },
     orderBy: {
       startedAt: 'desc'
